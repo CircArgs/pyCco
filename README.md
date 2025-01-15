@@ -1,1 +1,1 @@
-# pyCco
+# example-package

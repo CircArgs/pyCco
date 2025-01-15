@@ -1,0 +1,50 @@
+[project]
+name = "pyCco"
+version = "0.1.0"
+description = "A toy C compiler in pure Python"
+authors = [
+    {name = "circargs", email = "nick@ouellet.dev"},
+]
+dependencies = []
+requires-python = ">=3.13,<4.0"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pycco"]
+
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pre-commit>=3.2.2",
+    "pylint>=3.0.3",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "pytest>=7.3.0",
+    "-e pycco @ file:///${PROJECT_ROOT}/pycco",
+]
+
+[[tool.pdm.autoexport]]
+filename = "requirements/dev.txt"
+groups = ["default", "dev"]
+without-hashes = true
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.coverage.report]
+fail_under = 80
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = [
+    "tests",
+]
+
