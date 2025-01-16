@@ -7,8 +7,9 @@ from pycco.utils import flatten, NestedStr
 
 
 def token_map(kind: TokenKind) -> Callable[[NestedStr], Token]:
-    def create_token(result: NestedStr):
-        return Token(kind, flatten(result))
+    def create_token(result: NestedStr, index: int):
+        flattened = flatten(result)
+        return Token(kind, flattened, index, index+len(flattened))
     return create_token
 
 

@@ -5,6 +5,9 @@ from dataclasses import dataclass
 class Token:
     kind: "TokenKind"
     value: str
+    start: int = -1
+    end: int = -1
+
 
 
 class TokenKind(IntEnum):

@@ -64,7 +64,7 @@ class Parser(Generic[S, T]):
 
         return Parser(parse, description)
     
-    def __matmul__(self, mapper: Callable[[T], U]) -> "Parser[S, U]":
+    def map(self, mapper: Union[Callable[[T], U], Callable[[T, int], U]]) -> "Parser[S, U]":
         """
         Transform the result of this parser using a mapping function.
 
@@ -82,9 +82,12 @@ class Parser(Generic[S, T]):
             i, res = self(stream, index)
             if i == -1 or res is None:
                 return -1, None
-            return i, mapper(res)
+            return i, mapper(res, i)
 
         return Parser(parse, description)
+    
+    def __matmul__(self, mapper: Union[Callable[[T], U], Callable[[T], U]]) -> "Parser[S, U]":
+        return self.map(mapper)
     
     def __add__(self, other: Union["Parser[S, U]", S]) -> "Parser[S, List[Union[T, U]]]":
         """
