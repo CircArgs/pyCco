@@ -226,7 +226,7 @@ class Parser(Generic[S, T]):
             while current_index < len(stream):
                 stop_index, _ = stopping_parser(stream, current_index)
                 if stop_index != -1:
-                    return stop_index, results
+                    return current_index, results
 
                 results.append(stream[current_index])
                 current_index += 1
