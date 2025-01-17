@@ -1,6 +1,7 @@
 from functools import reduce
 from typing import Callable, Generic, List, Optional, Sequence, TypeVar, Union, Iterator
 from pycco.utils import _len
+from inspect import signature
 
 S = TypeVar("S")
 T = TypeVar("T")
@@ -62,7 +63,7 @@ class Parser(Generic[S, T]):
 
     def __init__(
         self,
-        parse_fn: Union[ParserFn[S, T], "Parser[S, T]"] = None,
+        parse_fn: Optional[ParserFn[S, T]] = None,
         description: Optional[str] = None,
     ):
         """
@@ -73,8 +74,13 @@ class Parser(Generic[S, T]):
             description (Optional[str]): A human-readable description of the parser.
         """
         self.parse_fn = parse_fn
-        self.description = description or "<unnamed parser>"
+        self.description = description
         self.frozen_description = False
+
+    def define(self: "Parser[S, T]", other: "Parser[S, U]") -> "Parser[S, U]":
+        self.parse_fn = other.parse_fn
+        self.description = other.description
+        return self
 
     def freeze_description(self: "Parser[S, T]") -> "Parser[S, T]":
         self.frozen_description = True
@@ -151,7 +157,13 @@ class Parser(Generic[S, T]):
             i, res = self(stream, index)
             if i == -1 or res is None:
                 return ParserResult()
-            return ParserResult(i, mapper(res, i))
+
+            if len(signature(mapper).parameters)==1:
+                mapped = mapper(res)
+            else:
+                mapped = mapper(res, i)
+
+            return ParserResult(i, mapped)
 
         return Parser(parse).describe(description)
 

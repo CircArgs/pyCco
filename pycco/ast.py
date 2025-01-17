@@ -34,15 +34,33 @@ class Node(ABC):
             - descendant of `Node`
         - Attributes starting with '_' are "obfuscated" and are not included in `children`
 
+        
+    Tokens
+        Node attributes should be listed in the order of their token sublists
+        otherwise if not possible to guarantee, tokens MUST be set on the node
     """
 
     parent: Optional["Node"] = None
     parent_key: Optional[str] = None
+    _tokens: List[Token] = []
 
     _is_compiled: bool = False
 
     def __post_init__(self):
         self.add_self_as_parent()
+
+    @property
+    def tokens(self)->List[Token]:
+        if self._tokens:
+            return self._tokens
+        ret = []
+        for child in self.children:
+            ret+=child.tokens
+        return ret
+
+    def set_tokens(self, tokens: List[Token])->TNode:
+        self._tokens=tokens
+        return self
 
     @property
     def depth(self) -> int:
@@ -423,8 +441,17 @@ class Type(Statement):
     pointer: bool = False
 
     def __str__(self):
-        return f"*{self.name}"
+        pointer = '' if not self.pointer else '*'
+        return f"{self.name}{pointer}"
 
+@dataclass
+class VariableDecl(Statement):
+    type: Type
+    name: Ident
+    semicolon: bool = False
+    def __str__(self):
+        semicolon = ';' if self.semicolon else ''
+        return f'{self.type} {self.name}{semicolon}'
 
 @dataclass
 class Arg(Statement):
@@ -440,13 +467,21 @@ class Return(Statement):
     value: Expression
 
     def __str__(self):
-        return f"return {self.value}"
+        return f"return {self.value};"
+
+
+@dataclass
+class Number(Expression):
+    value: str
+    type: Type
+
+    def __str__(self):
+        return self.value
 
 
 @dataclass
 class Function(Statement):
-    name: Ident
-    type: Type
+    var: VariableDecl
     args: List[Arg] = field(default_factory=list)
     body: List[Expression] = field(default_factory=list)
     ret: Optional[Return] = None
@@ -462,3 +497,48 @@ class Function(Statement):
 }}
 
 """
+
+@dataclass
+class IfStatement(Statement):
+    condition: Expression
+    then_branch: List[Statement]
+    else_branch: Optional[List[Statement]] = None
+
+    def __str__(self):
+        else_part = "" if not self.else_branch else f"else {{\n{self.else_branch}\n}}"
+        return f"if ({self.condition}) {{\n{self.then_branch}\n}} {else_part}"
+
+
+@dataclass
+class WhileLoop(Statement):
+    condition: Expression
+    body: List[Statement]
+
+    def __str__(self):
+        return f"while ({self.condition}) {{\n{self.body}\n}}"
+
+
+@dataclass
+class BinaryExpression(Expression):
+    left: Expression
+    operator: str
+    right: Expression
+
+    def __str__(self):
+        return f"({self.left} {self.operator} {self.right})"
+
+
+@dataclass
+class Char(Expression):
+    value: str
+
+    def __str__(self):
+        return f"'{self.value}'"
+
+
+@dataclass
+class StringLiteral(Expression):
+    value: str
+
+    def __str__(self):
+        return f'"{self.value}"'

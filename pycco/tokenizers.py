@@ -6,6 +6,8 @@ from pycco.parser import any_of, anything, match
 from pycco.tokens import Token, TokenKind, CKeywords, CTypes
 from pycco.utils import flatten_str, NestedStr
 
+class TokenizeError(ValueError):
+    ...
 
 def token_map(kind: TokenKind) -> Callable[[NestedStr], Token]:
     def create_token(result: NestedStr, index: int):
@@ -72,6 +74,7 @@ operators = any_of(
     "^",
     "<<",
     ">>",
+    "."
 ).freeze_description() @ token_map(TokenKind.OPERATOR)
 
 number = (
@@ -147,7 +150,7 @@ def iter_tokenize(source: str) -> Iterable[Token]:
             pointer = " " * column_number + "^"
 
             # Raise detailed error
-            raise ValueError(
+            raise TokenizeError(
                 f"Tokenization Error:\n"
                 f"Unexpected token at line {line_number + 1}, column {column_number + 1}:\n\n"
                 f"{before_error}\n"
@@ -161,6 +164,8 @@ def iter_tokenize(source: str) -> Iterable[Token]:
             yield token
 
         index = next_index
+
+    yield Token(TokenKind.EOF, start=index, end=index)
 
 
 def tokenize(source: str) -> List[Token]:

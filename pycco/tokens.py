@@ -13,6 +13,7 @@ class TokenKind(IntEnum):
     NUMBER = auto()  # Numeric constants like 42, 3.14
     COMMENT = auto()  # Comments like // this is a comment
     WHITESPACE = auto()  # Spaces, tabs, newlines
+    EOF = auto()
 
     def __eq__(self, other):
         if isinstance(other, Token):
