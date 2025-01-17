@@ -68,9 +68,3 @@ class Token:
     value: str
     start: int = -1
     end: int = -1
-
-    def __eq__(self, other)->bool:
-        if self.kind!=other.kind:
-            return False
-       
-        if self.kind not in (TokenKind.)

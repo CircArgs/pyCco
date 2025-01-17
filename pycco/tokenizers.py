@@ -3,12 +3,12 @@ from typing import Callable, Iterable, List
 from string import digits, ascii_letters
 from pycco.parser import any_of, anything, match
 from pycco.tokens import Token, TokenKind, CKeywords
-from pycco.utils import flatten, NestedStr
+from pycco.utils import flatten_str, NestedStr
 
 
 def token_map(kind: TokenKind) -> Callable[[NestedStr], Token]:
     def create_token(result: NestedStr, index: int):
-        flattened = flatten(result)
+        flattened = flatten_str(result)
         return Token(kind, flattened, index, index+len(flattened)-1)
     return create_token
 
