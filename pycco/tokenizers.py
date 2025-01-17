@@ -9,52 +9,60 @@ from pycco.utils import flatten, NestedStr
 def token_map(kind: TokenKind) -> Callable[[NestedStr], Token]:
     def create_token(result: NestedStr, index: int):
         flattened = flatten(result)
-        return Token(kind, flattened, index, index+len(flattened))
+        return Token(kind, flattened, index, index+len(flattened)-1)
     return create_token
 
 
 # Basic parsers
 whitespace = +any_of(' ', '\n', '\t', '\r') @ token_map(TokenKind.WHITESPACE)
-letter = any_of(*ascii_letters)
-digit = any_of(*digits)
-underscore = '_'
+whitespace.describe('whitespace')
+
+letter = any_of(*ascii_letters).describe('letter')
+digit = any_of(*digits).describe('digit')
+underscore = match('_')
 double_quote = match('"')
 single_quote = "'"
 
 # Token parsers
 identifier = (letter + (letter | digit | underscore).many()) @ token_map(TokenKind.IDENTIFIER)
+identifier.describe('identifier')
+
 
 string = (double_quote >> anything.until(double_quote) << double_quote) @ token_map(TokenKind.STRING_LITERAL)
+string.describe('string literal')
+
 
 keywords = any_of(*[match(keyword) for keyword in CKeywords]) @ token_map(TokenKind.KEYWORD)
+keywords.describe('keywords')
 
-symbols = any_of("{", "}", "(", ")", ";", ",", "[", "]", ".", "->") @ token_map(TokenKind.SYMBOL)
+symbols = any_of("{", "}", "(", ")", ";", ",", "[", "]", ".", "->").freeze_description() @ token_map(TokenKind.SYMBOL)
+
 
 operators = any_of(
     "+", "-", "*", "/", "%", "=", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!",
     "&", "|", "^", "<<", ">>"
-) @ token_map(TokenKind.OPERATOR)
+).freeze_description() @ token_map(TokenKind.OPERATOR)
 
 number = (
     (digit.many(1) + (match(".") + digit.many(1)).optional())  # Match integers and floats
     @ token_map(TokenKind.NUMBER)
-)
+).describe('number')
 
 single_line_comment = (match("//") >> anything.until(match("\n"))) @ token_map(TokenKind.COMMENT)
 
-multi_line_comment = (match("/*") >> anything.until(match("*/"))) @ token_map(TokenKind.COMMENT)
+multi_line_comment = (match("/*") >> anything.until(match("*/"))<<match("*/")) @ token_map(TokenKind.COMMENT)
 
 comments = single_line_comment | multi_line_comment
+comments.describe('comment')
 
-# Unified tokenizer parser
-tokenizer = (
-    whitespace |
-    comments |
-    keywords |
-    symbols |
-    operators |
-    number |
-    string |
+tokenizer = any_of(
+    whitespace,
+    comments,
+    keywords,
+    symbols,
+    operators,
+    number,
+    string,
     identifier
 )
 
@@ -76,11 +84,10 @@ def iter_tokenize(source: str) -> Iterable[Token]:
     lines = source.splitlines()  # Split the source into lines for better error reporting
 
     while index < len(source):
-        try:
-            next_index, token = tokenizer(source, index)
-        except Exception as e:
-            # General error handling (e.g., tokenizer malfunction)
-            raise ValueError(f"Parsing error at index {index}: {e}")
+
+        tokenized = tokenizer(source, index)
+        next_index, token = tokenized
+        description = tokenized.description
 
         if next_index == -1:  # Parsing error
             # Determine the line and column of the error
@@ -97,14 +104,16 @@ def iter_tokenize(source: str) -> Iterable[Token]:
 
             # Raise detailed error
             raise ValueError(
+                f"Tokenization Error:\n"
                 f"Unexpected token at line {line_number + 1}, column {column_number + 1}:\n\n"
                 f"{before_error}\n"
                 f"{error_line}\n"
                 f"{pointer}\n"
                 f"{after_error}\n"
+                f"Expected {description}.\n"
             )
 
-        if token.kind != TokenKind.WHITESPACE:  # Optionally, skip whitespace tokens
+        if token.kind != TokenKind.WHITESPACE:
             yield token
 
         index = next_index

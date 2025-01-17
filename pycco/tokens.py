@@ -1,12 +1,6 @@
 from enum import IntEnum, StrEnum, auto
 from dataclasses import dataclass
 
-@dataclass
-class Token:
-    kind: "TokenKind"
-    value: str
-    start: int = -1
-    end: int = -1
 
 
 
@@ -66,3 +60,17 @@ class CKeywords(StrEnum):
     _NORETURN = "_Noreturn"
     _STATIC_ASSERT = "_Static_assert"
     _THREAD_LOCAL = "_Thread_local"
+
+
+@dataclass
+class Token:
+    kind: TokenKind
+    value: str
+    start: int = -1
+    end: int = -1
+
+    def __eq__(self, other)->bool:
+        if self.kind!=other.kind:
+            return False
+       
+        if self.kind not in (TokenKind.)

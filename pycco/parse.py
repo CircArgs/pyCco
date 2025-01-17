@@ -1,1 +1,1 @@
-from pycco import parser
+from pycco.tokenizer import tokenizer
