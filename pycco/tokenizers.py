@@ -3,7 +3,7 @@
 from typing import Callable, Iterable, List
 from string import digits, ascii_letters
 from pycco.parser import any_of, anything, match
-from pycco.tokens import Token, TokenKind, CKeywords
+from pycco.tokens import Token, TokenKind, CKeywords, CTypes
 from pycco.utils import flatten_str, NestedStr
 
 
@@ -42,6 +42,9 @@ keywords = any_of(*[match(keyword) for keyword in CKeywords]) @ token_map(
     TokenKind.KEYWORD
 )
 keywords.describe("keywords")
+
+types = any_of(*[match(type) for type in CTypes]) @ token_map(TokenKind.TYPE)
+types.describe("keywords")
 
 symbols = any_of(
     "{", "}", "(", ")", ";", ",", "[", "]", ".", "->"
@@ -90,7 +93,15 @@ comments = single_line_comment | multi_line_comment
 comments.describe("comment")
 
 tokenizer = any_of(
-    whitespace, comments, keywords, symbols, operators, number, string, identifier
+    whitespace,
+    comments,
+    keywords,
+    types,
+    symbols,
+    operators,
+    number,
+    string,
+    identifier,
 )
 
 
@@ -146,7 +157,7 @@ def iter_tokenize(source: str) -> Iterable[Token]:
                 f"Expected {description}.\n"
             )
 
-        if token.kind != TokenKind.WHITESPACE:
+        if token.kind not in (TokenKind.WHITESPACE, TokenKind.COMMENT):
             yield token
 
         index = next_index

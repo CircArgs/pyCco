@@ -403,9 +403,10 @@ class Statement(Node): ...
 @dataclass
 class Code(Node):
     statements: List[Node]
+    main: Optional["Function"] = None
 
     def __str__(self):
-        return "\n".join(map(str, self.statements))
+        return "\n".join(map(str, self.children))
 
 
 @dataclass

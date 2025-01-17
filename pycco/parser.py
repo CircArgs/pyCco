@@ -1,5 +1,6 @@
 from functools import reduce
 from typing import Callable, Generic, List, Optional, Sequence, TypeVar, Union, Iterator
+from pycco.utils import _len
 
 S = TypeVar("S")
 T = TypeVar("T")
@@ -59,12 +60,16 @@ class Parser(Generic[S, T]):
     for a human-readable DSL representation.
     """
 
-    def __init__(self, parse_fn: ParserFn[S, T], description: Optional[str] = None):
+    def __init__(
+        self,
+        parse_fn: Union[ParserFn[S, T], "Parser[S, T]"] = None,
+        description: Optional[str] = None,
+    ):
         """
         Initialize the parser with a parsing function and an optional description.
 
         Args:
-            parse_fn (ParserFn[S, T]): A function that takes a stream and index, and returns a parsing result.
+            parse_fn (ParserFn[S, T]): A function that takes a stream and index, and returns a parsing result. OR another parser (for forward declarations)
             description (Optional[str]): A human-readable description of the parser.
         """
         self.parse_fn = parse_fn
@@ -91,8 +96,17 @@ class Parser(Generic[S, T]):
         Returns:
             ParserResult[T]: A tuple of the next index and the parsed result (or None on failure).
         """
-        index, result = self.parse_fn(stream, index)
-        return ParserResult(index, result, self.description)
+        description = (
+            self.description
+            if not isinstance(self.parse_fn, Parser)
+            else self.parse_fn.description
+        )
+        index, result = (
+            self.parse_fn(stream, index)
+            if not isinstance(self.parse_fn, Parser)
+            else self.parse_fn.parse_fn
+        )
+        return ParserResult(index, result, description)
 
     def __str__(self) -> str:
         return self.description
@@ -228,7 +242,7 @@ class Parser(Generic[S, T]):
             if result_index != -1:
                 # The parser succeeded, so `~` negates to failure
                 return ParserResult()
-            if index < len(stream):
+            if index < _len(stream):
                 # Consume one element since the parser failed
                 return ParserResult(index + 1, stream[index])
             return ParserResult()
@@ -256,7 +270,7 @@ class Parser(Generic[S, T]):
             results = []
             count = 0
 
-            while current_index < len(stream) and (max is None or count < max):
+            while current_index < _len(stream) and (max is None or count < max):
                 next_index, result = self(stream, current_index)
                 if next_index == -1:
                     break
@@ -284,7 +298,7 @@ class Parser(Generic[S, T]):
             results = []
             current_index = index
 
-            while current_index < len(stream):
+            while current_index < _len(stream):
                 stop_index, _ = stopping_parser(stream, current_index)
                 if stop_index != -1:
                     return ParserResult(current_index, results)
@@ -316,7 +330,7 @@ class Parser(Generic[S, T]):
             results.append(first_result)
             current_index = first_index
 
-            while current_index < len(stream):
+            while current_index < _len(stream):
                 sep_index, _ = separator(stream, current_index)
                 if sep_index == -1:
                     break
@@ -395,11 +409,18 @@ def match(element: Stream[S]) -> Parser[S, Stream[S]]:
     """
 
     def parse(s: Stream[S], index: int) -> ParserResult[Stream[S]]:
-        end_index = index + len(element)
+        element_len = _len(element)
+        end_index = index + element_len
+        if element_len == 1:
+            if s[index] == element:
+                return ParserResult(end_index, s[index])
+            return ParserResult()
+
         # Check if the slice matches the element
-        if s[index:end_index] == element:
-            return ParserResult(end_index, element)
-        return ParserResult(-1, None)  # Indicate failure
+        s_slice = s[index:end_index]
+        if s_slice == element:
+            return ParserResult(end_index, s_slice)
+        return ParserResult()  # Indicate failure
 
     return Parser(parse, f'"{str(element)}"')
 
@@ -418,7 +439,7 @@ def match_fn(
     """
 
     def parse(s: Stream[S], index: int) -> ParserResult[S]:
-        if index < len(s) and predicate(s[index]):
+        if index < _len(s) and predicate(s[index]):
             return index + 1, s[index]
         return -1, None
 
@@ -434,7 +455,7 @@ def _anything() -> Parser[S, S]:
     """
 
     def parse(s: Stream[S], index: int) -> ParserResult[S]:
-        if index < len(s):
+        if index < _len(s):
             return ParserResult(index + 1, s[index])
         return ParserResult()
 

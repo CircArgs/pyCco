@@ -20,3 +20,9 @@ def flatten_str(nested_str: NestedStr) -> str:
     if isinstance(nested_str, str):
         return nested_str
     return "".join(flatten_str(c) for c in nested_str)
+
+
+def _len(x: Any) -> int:
+    if hasattr(x, "__len__"):
+        return len(x)
+    return 1
