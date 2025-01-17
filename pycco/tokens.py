@@ -2,17 +2,15 @@ from enum import IntEnum, StrEnum, auto
 from dataclasses import dataclass
 
 
-
-
 class TokenKind(IntEnum):
-    IDENTIFIER = auto()      # Variable names, function names, etc.
-    KEYWORD = auto()         # C keywords like int, return, void, etc.
-    SYMBOL = auto()          # Symbols like {, }, (, ), ;, etc.
-    OPERATOR = auto()        # Operators like +, -, *, /, etc.
+    IDENTIFIER = auto()  # Variable names, function names, etc.
+    KEYWORD = auto()  # C keywords like int, return, void, etc.
+    SYMBOL = auto()  # Symbols like {, }, (, ), ;, etc.
+    OPERATOR = auto()  # Operators like +, -, *, /, etc.
     STRING_LITERAL = auto()  # String literals like "hello"
-    NUMBER = auto()          # Numeric constants like 42, 3.14
-    COMMENT = auto()         # Comments like // this is a comment
-    WHITESPACE = auto()      # Spaces, tabs, newlines
+    NUMBER = auto()  # Numeric constants like 42, 3.14
+    COMMENT = auto()  # Comments like // this is a comment
+    WHITESPACE = auto()  # Spaces, tabs, newlines
 
 
 class CKeywords(StrEnum):

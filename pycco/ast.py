@@ -1,5 +1,14 @@
 from dataclasses import field, dataclass, fields
-from typing import List, Optional, TypeVar, Iterator, Any, Callable, Type as TypeType, Tuple
+from typing import (
+    List,
+    Optional,
+    TypeVar,
+    Iterator,
+    Any,
+    Callable,
+    Type as TypeType,
+    Tuple,
+)
 from itertools import zip_longest, chain
 from pycco.tokens import Token
 from copy import deepcopy
@@ -12,6 +21,7 @@ PRIMITIVES = {int, float, str, bool, type(None)}
 # typevar used for node methods that return self
 # so the typesystem can correlate the self type with the return type
 TNode = TypeVar("TNode", bound="Node")  # pylint: disable=C0103
+
 
 class Node(ABC):
     """Base class for all PyCco AST nodes.
@@ -196,9 +206,11 @@ class Node(ABC):
         if nodes_only:
             child_generator = iter(
                 filter(
-                    lambda child: isinstance(child, Node)
-                    if not named
-                    else isinstance(child[1], Node),
+                    lambda child: (
+                        isinstance(child, Node)
+                        if not named
+                        else isinstance(child[1], Node)
+                    ),
                     child_generator,
                 ),
             )
@@ -206,9 +218,9 @@ class Node(ABC):
         if not nones:
             child_generator = iter(
                 filter(
-                    lambda child: (child is not None)
-                    if not named
-                    else (child[1] is not None),
+                    lambda child: (
+                        (child is not None) if not named else (child[1] is not None)
+                    ),
                     child_generator,
                 ),
             )  # pylint: disable=C0301
@@ -344,9 +356,11 @@ class Node(ABC):
         Note: Does not check (sub)AST. See `Node.compare` for comparing (sub)ASTs.
         """
         return type(self) == type(other) and all(  # pylint: disable=C0123
-            s == o
-            if type(s) in PRIMITIVES  # pylint: disable=C0123
-            else type(s) == type(o)  # pylint: disable=C0123
+            (
+                s == o
+                if type(s) in PRIMITIVES  # pylint: disable=C0123
+                else type(s) == type(o)
+            )  # pylint: disable=C0123
             for s, o in zip(
                 (self.fields(False, False, False, True)),
                 (other.fields(False, False, False, True)),
@@ -379,11 +393,12 @@ class Node(ABC):
         """
         raise NotImplementedError()
 
-class Expression(Node):
-    ...
 
-class Statement(Node):
-    ...
+class Expression(Node): ...
+
+
+class Statement(Node): ...
+
 
 @dataclass
 class Code(Node):
@@ -392,19 +407,23 @@ class Code(Node):
     def __str__(self):
         return "\n".join(map(str, self.statements))
 
+
 @dataclass
 class Ident(Expression):
     name: str
-    
+
     def __str__(self):
         return self.name
+
+
 @dataclass
 class Type(Statement):
     name: str
     pointer: bool = False
 
     def __str__(self):
-        return f'*{self.name}'
+        return f"*{self.name}"
+
 
 @dataclass
 class Arg(Statement):
@@ -412,14 +431,17 @@ class Arg(Statement):
     type: Type
 
     def __str__(self):
-        return f'{self.type} {self.name}'
-    
+        return f"{self.type} {self.name}"
+
+
 @dataclass
 class Return(Statement):
     value: Expression
 
     def __str__(self):
-        return f'return {self.value}'
+        return f"return {self.value}"
+
+
 @dataclass
 class Function(Statement):
     name: Ident
@@ -430,12 +452,12 @@ class Function(Statement):
 
     def __str__(self):
         args = ", ".join(map(str, self.args))
-        body = "\n".join(map(lambda s: f'\t{s}', self.body))
-        ret = '' if self.ret is None else self.ret
-        return f'''
+        body = "\n".join(map(lambda s: f"\t{s}", self.body))
+        ret = "" if self.ret is None else self.ret
+        return f"""
 {self.type} {self.name}({args}){{
 {body}
 {ret}
 }}
 
-'''
+"""

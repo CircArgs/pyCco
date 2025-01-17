@@ -1,6 +1,8 @@
 from typing import Iterable, Iterator, Any
 from itertools import chain
-NestedStr = str | Iterable["NestedStr"] 
+
+NestedStr = str | Iterable["NestedStr"]
+
 
 def flatten(maybe_iterables: Any) -> Iterator:
     """
@@ -9,9 +11,12 @@ def flatten(maybe_iterables: Any) -> Iterator:
 
     if not isinstance(maybe_iterables, (list, tuple, set, Iterator)):
         return iter([maybe_iterables])
-    return chain.from_iterable((flatten(maybe_iterable) for maybe_iterable in maybe_iterables))
+    return chain.from_iterable(
+        (flatten(maybe_iterable) for maybe_iterable in maybe_iterables)
+    )
 
-def flatten_str(nested_str: NestedStr)->str:
+
+def flatten_str(nested_str: NestedStr) -> str:
     if isinstance(nested_str, str):
         return nested_str
     return "".join(flatten_str(c) for c in nested_str)

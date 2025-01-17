@@ -6,8 +6,15 @@ T = TypeVar("T")
 U = TypeVar("U")
 
 Stream = Sequence[S]
+
+
 class ParserResult(Generic[T]):
-    def __init__(self, index: int = -1, result: Optional[T] = None, description: Optional[str] = None):
+    def __init__(
+        self,
+        index: int = -1,
+        result: Optional[T] = None,
+        description: Optional[str] = None,
+    ):
         self.index = index
         self.result = result
         self.description = description
@@ -24,7 +31,7 @@ class ParserResult(Generic[T]):
 
     def __len__(self) -> int:
         return 3
-    
+
     def __iter__(self) -> Iterator[Union[int, Optional[T]]]:
         yield self.index
         yield self.result
@@ -40,7 +47,10 @@ class ParserResult(Generic[T]):
             and self.result == other.result
             and self.description == other.description
         )
+
+
 ParserFn = Callable[[Stream[S], int], ParserResult[T]]
+
 
 class Parser(Generic[S, T]):
     """
@@ -61,13 +71,13 @@ class Parser(Generic[S, T]):
         self.description = description or "<unnamed parser>"
         self.frozen_description = False
 
-    def freeze_description(self: "Parser[S, T]")->"Parser[S, T]":
+    def freeze_description(self: "Parser[S, T]") -> "Parser[S, T]":
         self.frozen_description = True
         return self
 
-    def describe(self: "Parser[S, T]", description: str)->"Parser[S, T]":
+    def describe(self: "Parser[S, T]", description: str) -> "Parser[S, T]":
         if not self.frozen_description:
-            self.description=description
+            self.description = description
         return self
 
     def __call__(self, stream: Stream[S], index: int = 0) -> ParserResult[T]:
@@ -84,11 +94,11 @@ class Parser(Generic[S, T]):
         index, result = self.parse_fn(stream, index)
         return ParserResult(index, result, self.description)
 
-    def __str__(self)->str:
+    def __str__(self) -> str:
         return self.description
-    
-    def __repr__(self)->str:
-        return f'Parser({self.description})'
+
+    def __repr__(self) -> str:
+        return f"Parser({self.description})"
 
     def __or__(self, other: Union["Parser[S, T]", S]) -> "Parser[S, T]":
         """
@@ -106,8 +116,10 @@ class Parser(Generic[S, T]):
             return other(stream, index)
 
         return Parser(parse).describe(description)
-    
-    def map(self, mapper: Union[Callable[[T], U], Callable[[T, int], U]]) -> "Parser[S, U]":
+
+    def map(
+        self, mapper: Union[Callable[[T], U], Callable[[T, int], U]]
+    ) -> "Parser[S, U]":
         """
         Transform the result of this parser using a mapping function.
 
@@ -117,7 +129,7 @@ class Parser(Generic[S, T]):
         Returns:
             Parser[S, U]: A parser with the transformed result.
         """
-        name = 'unknown' if not hasattr(mapper, '__name__') else mapper.__name__
+        name = "unknown" if not hasattr(mapper, "__name__") else mapper.__name__
 
         description = f"({self.description} @ {name})"
 
@@ -128,11 +140,15 @@ class Parser(Generic[S, T]):
             return ParserResult(i, mapper(res, i))
 
         return Parser(parse).describe(description)
-    
-    def __matmul__(self, mapper: Union[Callable[[T], U], Callable[[T], U]]) -> "Parser[S, U]":
+
+    def __matmul__(
+        self, mapper: Union[Callable[[T], U], Callable[[T], U]]
+    ) -> "Parser[S, U]":
         return self.map(mapper)
-    
-    def __add__(self, other: Union["Parser[S, U]", S]) -> "Parser[S, List[Union[T, U]]]":
+
+    def __add__(
+        self, other: Union["Parser[S, U]", S]
+    ) -> "Parser[S, List[Union[T, U]]]":
         """
         Sequence this parser with another parser, combining their results into a single list.
 
@@ -150,10 +166,10 @@ class Parser(Generic[S, T]):
         def parse(stream: Stream[S], index: int) -> ParserResult[List[Union[T, U]]]:
             i, res1 = self(stream, index)
             if i == -1:
-                return ParserResult() # First parser failed
+                return ParserResult()  # First parser failed
             j, res2 = other(stream, i)
             if j == -1:
-                return ParserResult() # Second parser failed
+                return ParserResult()  # Second parser failed
             # Combine results into a flat list
             combined_result = []
             if isinstance(res1, list):
@@ -180,7 +196,7 @@ class Parser(Generic[S, T]):
             for _ in range(times):
                 next_index, result = self(stream, current_index)
                 if next_index == -1:
-                    return  ParserResult()
+                    return ParserResult()
                 results.append(result)
                 current_index = next_index
             return ParserResult(current_index, results)
@@ -203,7 +219,7 @@ class Parser(Generic[S, T]):
 
     def __invert__(self) -> "Parser[S, Optional[T]]":
         return self.optional()
-    
+
     def __neg__(self) -> "Parser[S, Optional[T]]":
         description = f"not {self.description}"
 
@@ -218,7 +234,7 @@ class Parser(Generic[S, T]):
             return ParserResult()
 
         return Parser(parse).describe(description)
-    
+
     def __pos__(self) -> "Parser[S, Optional[T]]":
         return self.many(1)
 
@@ -231,10 +247,9 @@ class Parser(Generic[S, T]):
         elif min == 1 and max is None:
             description = f"{self.description}+"
         elif max is None:
-            description = self.description+"{"+f"{min}"+"}"
+            description = self.description + "{" + f"{min}" + "}"
         else:
-            description = self.description+"{"+f"{min}, {max}"+"}"
-            
+            description = self.description + "{" + f"{min}, {max}" + "}"
 
         def parse(stream: Stream[S], index: int) -> ParserResult[List[T]]:
             current_index = index
@@ -296,7 +311,7 @@ class Parser(Generic[S, T]):
 
             first_index, first_result = self(stream, current_index)
             if first_index == -1:
-                return ParserResult(index, [] ) # No match at all
+                return ParserResult(index, [])  # No match at all
 
             results.append(first_result)
             current_index = first_index
@@ -356,7 +371,7 @@ class Parser(Generic[S, T]):
             return ParserResult(j, res1)
 
         return Parser(parse).describe(description)
-    
+
     @staticmethod
     def _auto_convert(item: S) -> "Parser[S, S]":
         """
@@ -378,6 +393,7 @@ def match(element: Stream[S]) -> Parser[S, Stream[S]]:
     Returns:
         Parser[S, Stream[S]]: A parser that matches the specified sequence.
     """
+
     def parse(s: Stream[S], index: int) -> ParserResult[Stream[S]]:
         end_index = index + len(element)
         # Check if the slice matches the element
@@ -388,7 +404,9 @@ def match(element: Stream[S]) -> Parser[S, Stream[S]]:
     return Parser(parse, f'"{str(element)}"')
 
 
-def match_fn(predicate: Callable[[S], bool]) -> Callable[[Stream[S], int], ParserResult[S]]:
+def match_fn(
+    predicate: Callable[[S], bool]
+) -> Callable[[Stream[S], int], ParserResult[S]]:
     """
     Create a parser that matches elements in the stream based on a predicate function.
 
@@ -398,6 +416,7 @@ def match_fn(predicate: Callable[[S], bool]) -> Callable[[Stream[S], int], Parse
     Returns:
         Callable[[Stream[S], int], ParserResult[S]]: A parser function that matches based on the predicate.
     """
+
     def parse(s: Stream[S], index: int) -> ParserResult[S]:
         if index < len(s) and predicate(s[index]):
             return index + 1, s[index]
@@ -413,14 +432,17 @@ def _anything() -> Parser[S, S]:
     Returns:
         Parser[S, S]: A parser that matches any element.
     """
+
     def parse(s: Stream[S], index: int) -> ParserResult[S]:
         if index < len(s):
             return ParserResult(index + 1, s[index])
         return ParserResult()
 
-    return Parser(parse, '.')
+    return Parser(parse, ".")
+
 
 anything = _anything()
+
 
 def sequence(*elements: Union[Parser[S, U], S]) -> Parser[S, List[T]]:
     """
@@ -432,7 +454,10 @@ def sequence(*elements: Union[Parser[S, U], S]) -> Parser[S, List[T]]:
     Returns:
         Parser[S, List[T]]: A parser that parses the input sequentially with the given parsers.
     """
-    return reduce(lambda a, b: a + b, map(Parser._auto_convert, elements)).describe(f'sequence of {" ".join(map(str, elements))}')
+    return reduce(lambda a, b: a + b, map(Parser._auto_convert, elements)).describe(
+        f'sequence of {" ".join(map(str, elements))}'
+    )
+
 
 def any_of(*elements: Union[Parser[S, U], S]) -> Parser[S, S]:
     """
@@ -444,7 +469,10 @@ def any_of(*elements: Union[Parser[S, U], S]) -> Parser[S, S]:
     Returns:
         Parser[S, S]: A parser that matches one of the elements.
     """
-    return reduce(lambda a, b: a | b, map(Parser._auto_convert, elements)).describe(f'one of {", ".join(map(str, elements))}')
+    return reduce(lambda a, b: a | b, map(Parser._auto_convert, elements)).describe(
+        f'one of {", ".join(map(str, elements))}'
+    )
+
 
 def parser(fn: ParserFn) -> Parser:
     """
