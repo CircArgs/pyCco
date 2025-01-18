@@ -34,7 +34,7 @@ class Node(ABC):
             - descendant of `Node`
         - Attributes starting with '_' are "obfuscated" and are not included in `children`
 
-        
+
     Tokens
         Node attributes should be listed in the order of their token sublists
         otherwise if not possible to guarantee, tokens MUST be set on the node
@@ -50,16 +50,16 @@ class Node(ABC):
         self.add_self_as_parent()
 
     @property
-    def tokens(self)->List[Token]:
+    def tokens(self) -> List[Token]:
         if self._tokens:
             return self._tokens
         ret = []
         for child in self.children:
-            ret+=child.tokens
+            ret += child.tokens
         return ret
 
-    def set_tokens(self, tokens: List[Token])->TNode:
-        self._tokens=tokens
+    def set_tokens(self, tokens: List[Token]) -> TNode:
+        self._tokens = tokens
         return self
 
     @property
@@ -441,17 +441,29 @@ class Type(Statement):
     pointer: bool = False
 
     def __str__(self):
-        pointer = '' if not self.pointer else '*'
+        pointer = "" if not self.pointer else "*"
         return f"{self.name}{pointer}"
+
 
 @dataclass
 class VariableDecl(Statement):
     type: Type
     name: Ident
     semicolon: bool = False
+
     def __str__(self):
-        semicolon = ';' if self.semicolon else ''
-        return f'{self.type} {self.name}{semicolon}'
+        semicolon = ";" if self.semicolon else ""
+        return f"{self.type} {self.name}{semicolon}"
+
+
+@dataclass
+class Assign(Statement):
+    var: Ident | VariableDecl
+    to: Expression
+
+    def __str__(self):
+        return f"{self.var} = {self.to};"
+
 
 @dataclass
 class Arg(Statement):
@@ -489,14 +501,25 @@ class Function(Statement):
     def __str__(self):
         args = ", ".join(map(str, self.args))
         body = "\n".join(map(lambda s: f"\t{s}", self.body))
-        ret = "" if self.ret is None else self.ret
+        ret = "" if self.ret is None else f"\t{self.ret}"
         return f"""
-{self.type} {self.name}({args}){{
+{self.var}({args})
+{{
 {body}
 {ret}
 }}
 
 """
+    
+@dataclass
+class FunctionCall(Expression):
+    name: Ident  # The function being called
+    args: List[Expression]  # The arguments passed to the function
+
+    def __str__(self):
+        args_str = ", ".join(map(str, self.args))
+        return f"{self.name}({args_str})"
+
 
 @dataclass
 class IfStatement(Statement):
@@ -519,13 +542,22 @@ class WhileLoop(Statement):
 
 
 @dataclass
-class BinaryExpression(Expression):
+class BinaryOp(Expression):
     left: Expression
     operator: str
     right: Expression
 
     def __str__(self):
         return f"({self.left} {self.operator} {self.right})"
+
+
+@dataclass
+class UnaryOp(Expression):
+    operator: str
+    operand: Expression
+
+    def __str__(self):
+        return f"({self.operator}{self.operand})"
 
 
 @dataclass
@@ -542,3 +574,21 @@ class StringLiteral(Expression):
 
     def __str__(self):
         return f'"{self.value}"'
+
+
+@dataclass
+class ArrayIndex(Expression):
+    array: Expression  # The array being indexed
+    index: Expression  # The index used to access the array
+
+    def __str__(self):
+        return f"{self.array}[{self.index}]"
+    
+@dataclass
+class StructAccess(Expression):
+    obj: Expression  # The struct or pointer to a struct
+    operator: str  # Either '.' or '->'
+    field: Ident  # The field being accessed
+
+    def __str__(self):
+        return f"{self.obj}{self.operator}{self.field}"

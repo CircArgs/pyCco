@@ -1,7 +1,18 @@
 from functools import reduce
-from typing import Callable, Generic, List, Optional, Sequence, TypeVar, Union, Iterator
+from typing import (
+    Callable,
+    Generic,
+    List,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+    Iterator,
+    Type,
+)
 from pycco.utils import _len
 from inspect import signature
+from enum import Enum
 
 S = TypeVar("S")
 T = TypeVar("T")
@@ -158,7 +169,7 @@ class Parser(Generic[S, T]):
             if i == -1 or res is None:
                 return ParserResult()
 
-            if len(signature(mapper).parameters)==1:
+            if len(signature(mapper).parameters) == 1:
                 mapped = mapper(res)
             else:
                 mapped = mapper(res, i)
@@ -504,6 +515,26 @@ def any_of(*elements: Union[Parser[S, U], S]) -> Parser[S, S]:
     """
     return reduce(lambda a, b: a | b, map(Parser._auto_convert, elements)).describe(
         f'one of {", ".join(map(str, elements))}'
+    )
+
+
+TEnum = TypeVar("TEnum", bound=Enum)
+
+
+def any_of_enum(*enum_classes: Type[TEnum]) -> Parser[Type[TEnum], TEnum]:
+    """
+    Create a parser that matches any member of the specified Enums.
+
+    Args:
+        *enum_classes (Type[TEnum]): The Enum classes to transform into a parser.
+
+    Returns:
+        Parser[Token, TEnum]: A parser that matches one of the members from the Enums.
+    """
+    return any_of(
+        *[match(enum_member) for enum_cls in enum_classes for enum_member in enum_cls]
+    ).describe(
+        f"one of {', '.join(enum_cls.__name__ for enum_cls in enum_classes)} members"
     )
 
 

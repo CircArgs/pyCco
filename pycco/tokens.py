@@ -74,6 +74,57 @@ class CKeywords(StrEnum):
     _THREAD_LOCAL = "_Thread_local"
 
 
+class UnaryOperator(StrEnum):
+    NEGATE = "-"
+    BITWISE_NOT = "~"
+    ADDRESS_OF = "&"
+    DEREFERENCE = "*"
+
+
+class BinaryOperator(StrEnum):
+    ADD = "+"
+    SUBTRACT = "-"
+    MULTIPLY = "*"
+    DIVIDE = "/"
+    MODULO = "%"
+    BITWISE_AND = "&"
+    BITWISE_OR = "|"
+    BITWISE_XOR = "^"
+    SHIFT_LEFT = "<<"
+    SHIFT_RIGHT = ">>"
+    LESS_THAN = "<"
+    GREATER_THAN = ">"
+    LESS_EQUAL = "<="
+    GREATER_EQUAL = ">="
+    EQUAL = "=="
+    NOT_EQUAL = "!="
+    LOGICAL_AND = "&&"
+    LOGICAL_OR = "||"
+
+
+class OtherOperator(StrEnum):
+    ASSIGN = "="
+    COMMA = ","
+    SEMICOLON = ";"
+    OPEN_PAREN = "("
+    CLOSE_PAREN = ")"
+    OPEN_BRACKET = "{"
+    CLOSE_BRACKET = "}"
+
+
+class Symbol(StrEnum):
+    OPEN_BRACE = "{"
+    CLOSE_BRACE = "}"
+    OPEN_PAREN = "("
+    CLOSE_PAREN = ")"
+    SEMICOLON = ";"
+    COMMA = ","
+    OPEN_BRACKET = "["
+    CLOSE_BRACKET = "]"
+    DOT = "."
+    ARROW = "->"
+
+
 @dataclass
 class Token:
     kind: TokenKind
@@ -84,6 +135,8 @@ class Token:
     def __eq__(self, other):
         if isinstance(other, TokenKind):
             return self.kind == other
+        if issubclass(type(other), str):
+            return self.value == other
         if isinstance(other, Token) and self.kind == other.kind:
             return None in (self.value, other.value) or self.value == other.value
         return False

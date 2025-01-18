@@ -2,12 +2,22 @@
 
 from typing import Callable, Iterable, List
 from string import digits, ascii_letters
-from pycco.parser import any_of, anything, match
-from pycco.tokens import Token, TokenKind, CKeywords, CTypes
+from pycco.parser import any_of, anything, match, any_of_enum
+from pycco.tokens import (
+    Token,
+    TokenKind,
+    CKeywords,
+    CTypes,
+    BinaryOperator,
+    UnaryOperator,
+    OtherOperator,
+    Symbol,
+)
 from pycco.utils import flatten_str, NestedStr
 
-class TokenizeError(ValueError):
-    ...
+
+class TokenizeError(ValueError): ...
+
 
 def token_map(kind: TokenKind) -> Callable[[NestedStr], Token]:
     def create_token(result: NestedStr, index: int):
@@ -40,41 +50,17 @@ string = (double_quote >> anything.until(double_quote) << double_quote) @ token_
 string.describe("string literal")
 
 
-keywords = any_of(*[match(keyword) for keyword in CKeywords]) @ token_map(
-    TokenKind.KEYWORD
-)
+keywords = any_of_enum(CKeywords) @ token_map(TokenKind.KEYWORD)
 keywords.describe("keywords")
 
-types = any_of(*[match(type) for type in CTypes]) @ token_map(TokenKind.TYPE)
+types = any_of_enum(CTypes) @ token_map(TokenKind.TYPE)
 types.describe("keywords")
 
-symbols = any_of(
-    "{", "}", "(", ")", ";", ",", "[", "]", ".", "->"
-).freeze_description() @ token_map(TokenKind.SYMBOL)
+symbols = any_of_enum(Symbol).freeze_description() @ token_map(TokenKind.SYMBOL)
 
 
-operators = any_of(
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "=",
-    "==",
-    "!=",
-    "<",
-    ">",
-    "<=",
-    ">=",
-    "&&",
-    "||",
-    "!",
-    "&",
-    "|",
-    "^",
-    "<<",
-    ">>",
-    "."
+operators = any_of_enum(
+    BinaryOperator, UnaryOperator, OtherOperator
 ).freeze_description() @ token_map(TokenKind.OPERATOR)
 
 number = (

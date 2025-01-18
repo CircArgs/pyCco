@@ -1,8 +1,17 @@
+from pycco.tokenizers import *
+from pycco.ast import *
+from pycco.parsers import *
+from inspect import signature
+from functools import reduce
+
 """Uses Parsers to transform a token stream into an AST"""
 from typing import List, Optional
 from pycco.parser import match, Parser, parser, S, T, U, ParserResult
-from pycco.tokens import Token, TokenKind
+from pycco.tokens import Token, TokenKind, BinaryOperator, UnaryOperator, OtherOperator
 from pycco import ast
+
+# utility to group sub-list items
+group = lambda l: [l]
 
 # Define token matchers
 type = match(TokenKind.TYPE)
@@ -16,7 +25,16 @@ semicolon = match(Token(TokenKind.SYMBOL, ";"))
 eq = match(Token(TokenKind.OPERATOR, "="))
 star = match(Token(TokenKind.OPERATOR, "*"))
 
+# forward declarations
+expression = Parser()
+statement = Parser()
+
 # Grammar Components with Map Functions
+
+def map_ident(token: Token)->ast.Ident:
+    return ast.Ident(token.value).set_tokens([token])
+
+ident = name @ map_ident
 
 # Variable Declaration
 def map_variable_decl(tokens: List[Token]) -> ast.VariableDecl:
@@ -56,13 +74,13 @@ variable_decl = (variable_ + semicolon) @ map_variable_decl
 
 args = open_paren >> variable.sep_by(Token(TokenKind.SYMBOL, ',')) << close_paren
 
-@parser
-def statement(stream: List[Token], index: int)-> ParserResult[ast.Statement]:
-    return (return_ | variable_decl).parse_fn(stream, index) 
 
-@parser
-def expression(stream: List[Token], index: int)-> ParserResult[ast.Expression]:
-    return (number | string | expression).parse_fn(stream, index) 
+
+def map_variable_assign(elements: List[Token|ast.Node])->ast.Assign:
+    return ast.Assign(*elements)
+    
+variable_assign = (((name@map_ident | variable_@map_variable_decl) << Token(TokenKind.OPERATOR, '='))+expression<<semicolon)
+variable_assign@=map_variable_assign
 
 def map_return(expr: ast.Expression)->ast.Return:
     return ast.Return(expr)
@@ -70,7 +88,23 @@ def map_return(expr: ast.Expression)->ast.Return:
 return_ = match(Token(TokenKind.KEYWORD, 'return')) >> expression << semicolon
 return_ @= map_return
 
+def map_function(nodes: List[ast.Node])->ast.Function:
+    var, args, *nodes = nodes
+    ret = None
+    if nodes and isinstance(nodes[-1], ast.Return):
+        body, ret = nodes[:-1], nodes[-1]
+    else:
+        body = nodes
+    return ast.Function(var, args, body, ret)
 
 # need to declare in sta
-function = variable + args
-function += open_bracket >> statement.until(close_bracket) << close_bracket
+function = variable + (args @ group)
+function += open_bracket >> (statement.many() + ~return_) << close_bracket
+function @= map_function
+
+# Unary Operator Parser
+def map_unary_op(elements: List[Token | ast.Expression]) -> ast.UnaryOp:
+    op, operand = elements
+    return ast.UnaryOp(operator=op.value, operand=operand)
+
+unary_op = (any_of_enum(UnaryOperator) + expression) @ map_unary_op
