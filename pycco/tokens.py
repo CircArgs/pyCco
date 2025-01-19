@@ -75,6 +75,7 @@ class CKeywords(StrEnum):
 
 
 class UnaryOperator(StrEnum):
+    POS = "+"
     NEGATE = "-"
     BITWISE_NOT = "~"
     ADDRESS_OF = "&"

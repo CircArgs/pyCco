@@ -13,6 +13,7 @@ from typing import (
 from pycco.utils import _len
 from inspect import signature
 from enum import Enum
+from copy import deepcopy
 
 S = TypeVar("S")
 T = TypeVar("T")
@@ -61,6 +62,11 @@ class ParserResult(Generic[T]):
             and self.description == other.description
         )
 
+    def __bool__(self) -> bool:
+        if self.index < 0:
+            return False
+        return True
+
 
 ParserFn = Callable[[Stream[S], int], ParserResult[T]]
 
@@ -75,7 +81,8 @@ class Parser(Generic[S, T]):
     def __init__(
         self,
         parse_fn: Optional[ParserFn[S, T]] = None,
-        description: Optional[str] = None,
+        description: str = "",
+        frozen_description: bool = False,
     ):
         """
         Initialize the parser with a parsing function and an optional description.
@@ -86,21 +93,24 @@ class Parser(Generic[S, T]):
         """
         self.parse_fn = parse_fn
         self.description = description
-        self.frozen_description = False
+        self.frozen_description = frozen_description
 
     def define(self: "Parser[S, T]", other: "Parser[S, U]") -> "Parser[S, U]":
         self.parse_fn = other.parse_fn
         self.description = other.description
         return self
 
-    def freeze_description(self: "Parser[S, T]") -> "Parser[S, T]":
-        self.frozen_description = True
+    def freeze_description(self: "Parser[S, T]", value: bool = True) -> "Parser[S, T]":
+        self.frozen_description = value
         return self
 
-    def describe(self: "Parser[S, T]", description: str) -> "Parser[S, T]":
+    def set_description(self: "Parser[S, T]", description: str) -> "Parser[S, T]":
         if not self.frozen_description:
             self.description = description
         return self
+
+    def describe(self: "Parser[S, T]", description: str) -> "Parser[S, T]":
+        return deepcopy(self).set_description(description)
 
     def __call__(self, stream: Stream[S], index: int = 0) -> ParserResult[T]:
         """
@@ -146,7 +156,11 @@ class Parser(Generic[S, T]):
                 return result
             return other(stream, index)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def map(
         self, mapper: Union[Callable[[T], U], Callable[[T, int], U]]
@@ -176,9 +190,18 @@ class Parser(Generic[S, T]):
 
             return ParserResult(i, mapped)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def __matmul__(
+        self, mapper: Union[Callable[[T], U], Callable[[T], U]]
+    ) -> "Parser[S, U]":
+        return self.map(mapper).set_description(self.description)
+
+    def __imatmul__(
         self, mapper: Union[Callable[[T], U], Callable[[T], U]]
     ) -> "Parser[S, U]":
         return self.map(mapper)
@@ -219,7 +242,11 @@ class Parser(Generic[S, T]):
                 combined_result.append(res2)
             return ParserResult(j, combined_result)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def __mul__(self, times: int) -> "Parser[S, List[T]]":
         """
@@ -238,7 +265,11 @@ class Parser(Generic[S, T]):
                 current_index = next_index
             return ParserResult(current_index, results)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def optional(self) -> "Parser[S, Optional[T]]":
         """
@@ -252,12 +283,16 @@ class Parser(Generic[S, T]):
                 return ParserResult(index)
             return result
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def __invert__(self) -> "Parser[S, Optional[T]]":
         return self.optional()
 
-    def __neg__(self) -> "Parser[S, Optional[T]]":
+    def not_(self) -> "Parser[S, Optional[T]]":
         description = f"not {self.description}"
 
         def parse(stream: Stream[S], index: int) -> ParserResult[S]:
@@ -270,7 +305,11 @@ class Parser(Generic[S, T]):
                 return ParserResult(index + 1, stream[index])
             return ParserResult()
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def __pos__(self) -> "Parser[S, Optional[T]]":
         return self.many(1)
@@ -306,7 +345,11 @@ class Parser(Generic[S, T]):
 
             return ParserResult(current_index, results)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def until(self, stopping_parser: Union["Parser[S, T]", S]) -> "Parser[S, List[T]]":
         """
@@ -331,7 +374,11 @@ class Parser(Generic[S, T]):
 
             return ParserResult()
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def sep_by(self, separator: Union["Parser[S, U]", S]) -> "Parser[S, List[T]]":
         """
@@ -367,7 +414,11 @@ class Parser(Generic[S, T]):
 
             return ParserResult(current_index, results)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def __rshift__(self, other: Union["Parser[S, U]", S]) -> "Parser[S, U]":
         """
@@ -387,7 +438,11 @@ class Parser(Generic[S, T]):
                 return ParserResult()
             return ParserResult(j, res2)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     def __lshift__(self, other: Union["Parser[S, U]", S]) -> "Parser[S, T]":
         """
@@ -407,7 +462,11 @@ class Parser(Generic[S, T]):
                 return ParserResult()
             return ParserResult(j, res1)
 
-        return Parser(parse).describe(description)
+        return Parser(
+            parse,
+            description=self.description,
+            frozen_description=self.frozen_description,
+        ).set_description(description)
 
     @staticmethod
     def _auto_convert(item: S) -> "Parser[S, S]":
@@ -461,12 +520,14 @@ def match_fn(
         Callable[[Stream[S], int], ParserResult[S]]: A parser function that matches based on the predicate.
     """
 
+    description = f"fn`{predicate.__name__}`"
+
     def parse(s: Stream[S], index: int) -> ParserResult[S]:
         if index < _len(s) and predicate(s[index]):
             return index + 1, s[index]
         return -1, None
 
-    return parse
+    return Parser(parse, description)
 
 
 def _anything() -> Parser[S, S]:
@@ -498,9 +559,9 @@ def sequence(*elements: Union[Parser[S, U], S]) -> Parser[S, List[T]]:
     Returns:
         Parser[S, List[T]]: A parser that parses the input sequentially with the given parsers.
     """
-    return reduce(lambda a, b: a + b, map(Parser._auto_convert, elements)).describe(
-        f'sequence of {" ".join(map(str, elements))}'
-    )
+    return reduce(
+        lambda a, b: a + b, map(Parser._auto_convert, elements)
+    ).set_description(f'sequence of {" ".join(map(str, elements))}')
 
 
 def any_of(*elements: Union[Parser[S, U], S]) -> Parser[S, S]:
@@ -513,9 +574,9 @@ def any_of(*elements: Union[Parser[S, U], S]) -> Parser[S, S]:
     Returns:
         Parser[S, S]: A parser that matches one of the elements.
     """
-    return reduce(lambda a, b: a | b, map(Parser._auto_convert, elements)).describe(
-        f'one of {", ".join(map(str, elements))}'
-    )
+    return reduce(
+        lambda a, b: a | b, map(Parser._auto_convert, elements)
+    ).set_description(f'one of {", ".join(map(str, elements))}')
 
 
 TEnum = TypeVar("TEnum", bound=Enum)
@@ -533,7 +594,7 @@ def any_of_enum(*enum_classes: Type[TEnum]) -> Parser[Type[TEnum], TEnum]:
     """
     return any_of(
         *[match(enum_member) for enum_cls in enum_classes for enum_member in enum_cls]
-    ).describe(
+    ).set_description(
         f"one of {', '.join(enum_cls.__name__ for enum_cls in enum_classes)} members"
     )
 

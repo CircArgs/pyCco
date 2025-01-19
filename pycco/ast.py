@@ -1,4 +1,5 @@
 from dataclasses import field, dataclass, fields
+import typing
 from typing import (
     List,
     Optional,
@@ -8,6 +9,8 @@ from typing import (
     Callable,
     Type as TypeType,
     Tuple,
+    Union,
+    get_type_hints,
 )
 from itertools import zip_longest, chain
 from pycco.tokens import Token
@@ -21,6 +24,82 @@ PRIMITIVES = {int, float, str, bool, type(None)}
 # typevar used for node methods that return self
 # so the typesystem can correlate the self type with the return type
 TNode = TypeVar("TNode", bound="Node")  # pylint: disable=C0103
+
+
+from typing import Any, Union, get_origin, get_args, ForwardRef
+
+
+class PyCcoTypeError(TypeError):
+    """
+    Raised when a field in a PyCco AST node does not match its expected type.
+    """
+
+    def __init__(
+        self, node: "Node", field_name: str, expected_type: type, actual_value: Any
+    ):
+        self.node = node
+        self.node_type = node.__class__
+        self.field_name = field_name
+        self.expected_type = expected_type
+        self.actual_value = actual_value
+        self.actual_type = type(actual_value).__name__
+
+        super().__init__(self._generate_message())
+
+    def _generate_message(self) -> str:
+        """
+        Generate a detailed error message.
+        """
+        value = (
+            self.actual_value
+            if not isinstance(self.actual_value, list)
+            else "[" + ", ".join(map(str, self.actual_value)) + "]"
+        )
+        return (
+            f"Type mismatch for '{self.field_name}' of {self.node_type.__name__}:\n"
+            f"  Expected type: {self._prettify_type(self.expected_type)}\n"
+            f"  Got value: {value} (type: {self._prettify_type(self.actual_type)})"
+        )
+
+    @staticmethod
+    def _prettify_type(type_) -> str:
+        """
+        Clean up type names for better readability.
+        Handles Union, ForwardRef, and other complex types.
+        """
+        from typing import Union, get_origin, get_args, ForwardRef
+
+        # Handle simple string types (for ForwardRefs or direct strings)
+        if isinstance(type_, str):
+            return type_
+
+        # Handle Union types
+        origin = get_origin(type_)
+        if origin is Union:
+            args = get_args(type_)
+            prettified_args = ", ".join(
+                PyCcoTypeError._prettify_type(arg) for arg in args
+            )
+            return f"one of {prettified_args}"
+
+        # Handle ForwardRefs (e.g., "MyNode")
+        if isinstance(type_, ForwardRef):
+            return type_.__forward_arg__
+
+        # Handle generic collections like List, Dict
+        if origin is not None:
+            args = get_args(type_)
+            prettified_args = ", ".join(
+                PyCcoTypeError._prettify_type(arg) for arg in args
+            )
+            return f"{origin.__name__}[{prettified_args}]"
+
+        # Handle built-in and standard types (int, str, etc.)
+        if hasattr(type_, "__name__"):
+            return type_.__name__
+
+        # Fallback to string representation for unknown types
+        return str(type_)
 
 
 class Node(ABC):
@@ -45,9 +124,100 @@ class Node(ABC):
     _tokens: List[Token] = []
 
     _is_compiled: bool = False
+    _hooks: List[Callable[["Node", PyCcoTypeError], None]] = []
+
 
     def __post_init__(self):
-        self.add_self_as_parent()
+        try:
+            self.add_self_as_parent()
+            self.validate_field_types()
+        except PyCcoTypeError as e:
+            self._run_hooks(e)
+
+    @classmethod
+    def add_hook(cls, hook: Callable[["Node", Exception], None]) -> None:
+        """
+        Add a class-level hook to be executed if an exception occurs in __post_init__.
+        
+        Args:
+            hook (Callable[["Node", Exception], None]): A callback function that
+                                                       takes the node instance and an exception.
+        """
+        if not callable(hook):
+            raise ValueError("Hook must be a callable that accepts (self, exception).")
+        cls._hooks.append(hook)
+
+    @classmethod
+    def _run_hooks(cls, exception: Exception) -> None:
+        """
+        Run all registered hooks, passing the current instance and the exception.
+        
+        Args:
+            exception (Exception): The exception raised during __post_init__.
+        """
+        for hook in cls._hooks:
+            hook(exception)
+
+
+    def validate_field_types(self):
+        """
+        Validates that the fields of the node match their expected types.
+        Raises:
+            PyCcoTypeError: If any field does not match its expected type.
+        """
+        for field in self.__dataclass_fields__.values():
+            field_name = field.name
+            expected_type = field.type
+            actual_value = getattr(self, field_name)
+
+            # Skip obfuscated fields starting with '_'
+            if field_name.startswith("_"):
+                continue
+
+            # Check type compatibility
+            if not self.is_type_compatible(actual_value, expected_type):
+                raise PyCcoTypeError(
+                    node=self,
+                    field_name=field_name,
+                    expected_type=expected_type,
+                    actual_value=actual_value,
+                )
+
+    @staticmethod
+    def is_type_compatible(value, expected_type):
+        """
+        Checks if a value matches the expected type.
+        """
+        # Handle ForwardRef by comparing type names
+        if isinstance(expected_type, typing.ForwardRef):
+            return type(value).__name__ == expected_type.__forward_arg__
+
+        # Handle Union types (Optional is a Union with NoneType)
+        if hasattr(expected_type, "__origin__") and expected_type.__origin__ is Union:
+            return any(
+                Node.is_type_compatible(value, t) for t in expected_type.__args__
+            )
+
+        # Handle lists, tuples, sets, etc.
+        if hasattr(expected_type, "__origin__"):
+            if isinstance(value, expected_type.__origin__):
+                # Check if inner elements match the expected type
+                if expected_type.__args__:
+                    return all(
+                        Node.is_type_compatible(v, expected_type.__args__[0])
+                        for v in value
+                    )
+                return True
+
+        # Handle Node descendants and primitives
+        if isinstance(value, expected_type):
+            return True
+
+        # Handle NoneType (None)
+        if value is None and expected_type is type(None):
+            return True
+
+        return False
 
     @property
     def tokens(self) -> List[Token]:
@@ -495,7 +665,7 @@ class Number(Expression):
 class Function(Statement):
     var: VariableDecl
     args: List[Arg] = field(default_factory=list)
-    body: List[Expression] = field(default_factory=list)
+    body: List[Expression | Statement] = field(default_factory=list)
     ret: Optional[Return] = None
 
     def __str__(self):
@@ -510,7 +680,8 @@ class Function(Statement):
 }}
 
 """
-    
+
+
 @dataclass
 class FunctionCall(Expression):
     name: Ident  # The function being called
@@ -546,6 +717,7 @@ class BinaryOp(Expression):
     left: Expression
     operator: str
     right: Expression
+
 
     def __str__(self):
         return f"({self.left} {self.operator} {self.right})"
@@ -583,7 +755,8 @@ class ArrayIndex(Expression):
 
     def __str__(self):
         return f"{self.array}[{self.index}]"
-    
+
+
 @dataclass
 class StructAccess(Expression):
     obj: Expression  # The struct or pointer to a struct
@@ -592,3 +765,11 @@ class StructAccess(Expression):
 
     def __str__(self):
         return f"{self.obj}{self.operator}{self.field}"
+
+
+@dataclass
+class Parens(Expression):
+    inner: Union["Parens", Expression]
+
+    def __str__(self):
+        return f"({self.inner})"

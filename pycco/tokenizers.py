@@ -29,10 +29,10 @@ def token_map(kind: TokenKind) -> Callable[[NestedStr], Token]:
 
 # Basic parsers
 whitespace = +any_of(" ", "\n", "\t", "\r") @ token_map(TokenKind.WHITESPACE)
-whitespace.describe("whitespace")
+whitespace.set_description("whitespace")
 
-letter = any_of(*ascii_letters).describe("letter")
-digit = any_of(*digits).describe("digit")
+letter = any_of(*ascii_letters).set_description("letter")
+digit = any_of(*digits).set_description("digit")
 underscore = match("_")
 double_quote = match('"')
 single_quote = "'"
@@ -41,20 +41,20 @@ single_quote = "'"
 identifier = (letter + (letter | digit | underscore).many()) @ token_map(
     TokenKind.IDENTIFIER
 )
-identifier.describe("identifier")
+identifier.set_description("identifier")
 
 
 string = (double_quote >> anything.until(double_quote) << double_quote) @ token_map(
     TokenKind.STRING_LITERAL
 )
-string.describe("string literal")
+string.set_description("string literal")
 
 
 keywords = any_of_enum(CKeywords) @ token_map(TokenKind.KEYWORD)
-keywords.describe("keywords")
+keywords.set_description("keywords")
 
 types = any_of_enum(CTypes) @ token_map(TokenKind.TYPE)
-types.describe("keywords")
+types.set_description("keywords")
 
 symbols = any_of_enum(Symbol).freeze_description() @ token_map(TokenKind.SYMBOL)
 
@@ -68,7 +68,7 @@ number = (
         digit.many(1) + (match(".") + digit.many(1)).optional()
     )  # Match integers and floats
     @ token_map(TokenKind.NUMBER)
-).describe("number")
+).set_description("number")
 
 single_line_comment = (match("//") >> anything.until(match("\n"))) @ token_map(
     TokenKind.COMMENT
@@ -79,7 +79,7 @@ multi_line_comment = (
 ) @ token_map(TokenKind.COMMENT)
 
 comments = single_line_comment | multi_line_comment
-comments.describe("comment")
+comments.set_description("comment")
 
 tokenizer = any_of(
     whitespace,
