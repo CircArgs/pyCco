@@ -11,12 +11,25 @@ from typing import (
     Tuple,
     Union,
     get_type_hints,
+    TYPE_CHECKING,
 )
 from itertools import zip_longest, chain
 from pycco.tokens import Token
 from copy import deepcopy
 from pycco.utils import flatten
 from abc import ABC, abstractmethod
+
+if TYPE_CHECKING:
+    from pycco.visitor import Visitor, CompilationContext
+
+
+def get_compiler_backend(backend: str) -> "CompilationContext":
+    if backend.strip() in ("arm_v8", "armv8", "arm8"):
+        from pycco.backends.armv8 import compiler
+
+        return compiler()
+    raise ValueError(f"Unknown backend `{backend}`.")
+
 
 PRIMITIVES = {int, float, str, bool, type(None)}
 
@@ -126,7 +139,6 @@ class Node(ABC):
     _is_compiled: bool = False
     _hooks: List[Callable[["Node", PyCcoTypeError], None]] = []
 
-
     def __post_init__(self):
         try:
             self.add_self_as_parent()
@@ -138,7 +150,7 @@ class Node(ABC):
     def add_hook(cls, hook: Callable[["Node", Exception], None]) -> None:
         """
         Add a class-level hook to be executed if an exception occurs in __post_init__.
-        
+
         Args:
             hook (Callable[["Node", Exception], None]): A callback function that
                                                        takes the node instance and an exception.
@@ -151,13 +163,12 @@ class Node(ABC):
     def _run_hooks(cls, exception: Exception) -> None:
         """
         Run all registered hooks, passing the current instance and the exception.
-        
+
         Args:
             exception (Exception): The exception raised during __post_init__.
         """
         for hook in cls._hooks:
             hook(exception)
-
 
     def validate_field_types(self):
         """
@@ -581,6 +592,10 @@ class Node(ABC):
         """
         raise NotImplementedError()
 
+    def compile(self, backend: str):
+        ctx, visitor = get_compiler_backend(backend)
+        return visitor(ctx, self)
+
 
 class Expression(Node): ...
 
@@ -669,8 +684,8 @@ class Function(Statement):
     ret: Optional[Return] = None
 
     def __str__(self):
-        args = ", ".join(map(str, self.args))
-        body = "\n".join(map(lambda s: f"\t{s}", self.body))
+        args = 'void' if not self.args else ", ".join(map(str, self.args))
+        body = "" if not self.body else "\n".join(map(lambda s: f"\t{s}", self.body))
         ret = "" if self.ret is None else f"\t{self.ret}"
         return f"""
 {self.var}({args})
@@ -717,7 +732,6 @@ class BinaryOp(Expression):
     left: Expression
     operator: str
     right: Expression
-
 
     def __str__(self):
         return f"({self.left} {self.operator} {self.right})"

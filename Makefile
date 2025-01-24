@@ -1,5 +1,5 @@
 test:
-	poetry run pytest -n auto --cov=pycco -vv tests/ --doctest-modules pycco --without-integration --without-slow-integration ${PYTEST_ARGS}
+	poetry run pytest -n auto --cov=pycco -vv tests/ --doctest-modules pycco
 
 check:
 	poetry run pre-commit run --all-files

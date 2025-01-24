@@ -74,56 +74,57 @@ class CKeywords(StrEnum):
     _THREAD_LOCAL = "_Thread_local"
 
 
-class UnaryOperator(StrEnum):
-    POS = "+"
-    NEGATE = "-"
-    BITWISE_NOT = "~"
-    ADDRESS_OF = "&"
-    DEREFERENCE = "*"
-
-
-class BinaryOperator(StrEnum):
-    ADD = "+"
-    SUBTRACT = "-"
-    MULTIPLY = "*"
-    DIVIDE = "/"
-    MODULO = "%"
-    BITWISE_AND = "&"
-    BITWISE_OR = "|"
-    BITWISE_XOR = "^"
-    SHIFT_LEFT = "<<"
-    SHIFT_RIGHT = ">>"
-    LESS_THAN = "<"
-    GREATER_THAN = ">"
-    LESS_EQUAL = "<="
-    GREATER_EQUAL = ">="
+class MultiCharOperators(StrEnum):
+    PLUS_ASSIGN = "+="
+    MINUS_ASSIGN = "-="
+    TIMES_ASSIGN = "*="
+    DIV_ASSIGN = "/="
+    MOD_ASSIGN = "%="
+    AND_ASSIGN = "&="
+    OR_ASSIGN = "|="
+    XOR_ASSIGN = "^="
+    SHIFT_LEFT_ASSIGN = "<<="
+    SHIFT_RIGHT_ASSIGN = ">>="
+    INC = "++"
+    DEC = "--"
     EQUAL = "=="
     NOT_EQUAL = "!="
+    LESS_EQUAL = "<="
+    GREATER_EQUAL = ">="
     LOGICAL_AND = "&&"
     LOGICAL_OR = "||"
 
 
-class OtherOperator(StrEnum):
+class SingleCharOperators(StrEnum):
+    PLUS = "+"
+    MINUS = "-"
+    MUL = "*"
+    DIV = "/"
+    MOD = "%"
     ASSIGN = "="
-    COMMA = ","
-    SEMICOLON = ";"
-    OPEN_PAREN = "("
-    CLOSE_PAREN = ")"
-    OPEN_BRACKET = "{"
-    CLOSE_BRACKET = "}"
+    BITWISE_AND = "&"
+    BITWISE_OR = "|"
+    BITWISE_XOR = "^"
+    BITWISE_NOT = "~"
+    LESS_THAN = "<"
+    GREATER_THAN = ">"
+    SHIFT_LEFT = "<<"
+    SHIFT_RIGHT = ">>"
 
 
-class Symbol(StrEnum):
-    OPEN_BRACE = "{"
-    CLOSE_BRACE = "}"
-    OPEN_PAREN = "("
-    CLOSE_PAREN = ")"
+class Symbols(StrEnum):
+    LPAREN = "("
+    RPAREN = ")"
+    LBRACKET = "["
+    RBRACKET = "]"
+    LBRACE = "{"
+    RBRACE = "}"
     SEMICOLON = ";"
     COMMA = ","
-    OPEN_BRACKET = "["
-    CLOSE_BRACKET = "]"
     DOT = "."
-    ARROW = "->"
+    COLON = ":"
+    QUESTION = "?"
+    BACKSLASH = "\\"
 
 
 @dataclass
@@ -134,15 +135,21 @@ class Token:
     end: int = -1
 
     def __eq__(self, other):
+        """
+        Allows convenient comparisons like:
+            token == TokenKind.IDENTIFIER
+            token == "main"
+            token1 == token2
+        """
         if isinstance(other, TokenKind):
             return self.kind == other
-        if issubclass(type(other), str):
+        if isinstance(other, str):
             return self.value == other
         if isinstance(other, Token) and self.kind == other.kind:
-            return None in (self.value, other.value) or self.value == other.value
+            return (self.value is None or other.value is None) or (
+                self.value == other.value
+            )
         return False
 
     def __str__(self):
-        if self.value:
-            return self.value
-        return str(self.kind)
+        return f"{self.kind}({self.value!r})" if self.value else str(self.kind)
