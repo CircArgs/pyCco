@@ -1,793 +1,746 @@
-from functools import reduce
-from typing import (
-    Callable,
-    Generic,
-    List,
-    Optional,
-    Sequence,
-    TypeVar,
-    Union,
-    Iterator,
-    Type,
-)
-from inspect import signature
-from enum import Enum
+"""
+Moslty a copy of parsy
+"""
+
+from __future__ import annotations
+
+import enum
+import operator
+import re
 from dataclasses import dataclass
+from functools import wraps
+from typing import Any, Callable, FrozenSet
+from textwrap import indent
 
-# Type variables
-S = TypeVar("S")  # Element type in the stream
-T = TypeVar("T")  # Result type of the parser
-U = TypeVar("U")  # Generic type variable
-V = TypeVar("V")  # Generic type variable
-TEnum = TypeVar("TEnum", bound=Enum)  # Enum type variable
+noop = lambda x: x
 
-# Stream type
-Stream = Sequence[S]
+
+def line_info_at(stream, index):
+    if index > len(stream):
+        raise ValueError("invalid index")
+    line = stream.count("\n", 0, index)
+    last_nl = stream.rfind("\n", 0, index)
+    col = index - (last_nl + 1)
+    return (line, col)
+
+
+class ParseError(RuntimeError):
+    def __init__(self, expected, stream, index):
+        self.expected = expected
+        self.stream = stream
+        self.index = index
+
+    def line_info(self):
+        try:
+            return line_info_at(self.stream, self.index)
+        except (TypeError, AttributeError):  # not a str
+            return self.index
+
+    def __str__(self):
+        expected_list = sorted(repr(e) for e in self.expected)
+
+        line_info = self.line_info()
+
+        format_line_info = ":".join(map(str, line_info))
+
+        block = []
+        if isinstance(line_info, int):
+            start, end = max(0, line_info - 10), line_info + 10
+            block.append(self.stream[start:end])
+            block.append(" " * line_info + "^")
+        else:
+            line, col = line_info
+            start, end = max(0, line - 5), line + 5
+            lines = self.stream.splitlines()
+            if start > 0:
+                block.append("...")
+
+            block.extend(lines[start : line + 1])
+            block.append(" " * col + "^")
+            block.extend(lines[line + 1 : end])
+            if end < len(lines):
+                block.append("...")
+
+        block = "\n".join(block)
+        block = indent(block, " " * 4)
+
+        if len(expected_list) == 1:
+            return f"\n{block}\n\nExpected {expected_list[0]} at {format_line_info}\n"
+        else:
+            return f"\n{block}\n\nExpected one of {', '.join(expected_list)} at {format_line_info}\n"
 
 
 @dataclass
-class Position:
+class Result:
+    status: bool
     index: int
-
-    def advance(self, char: Optional[S] = None) -> "Position":
-        return Position(self.index + 1)
-
-
-class ParseError(Exception):
-    def __init__(self, position: Position, expected: str, found: Optional[S]):
-        self.position = position
-        self.expected = expected
-        self.found = found
-        super().__init__(self.__str__())
-
-    def __str__(self):
-        return f"ParseError at index {self.position.index}: expected {self.expected}, found {repr(self.found)}"
-
-
-class ParserResult(Generic[T]):
-    def __init__(
-        self,
-        position: Position,
-        result: Optional[T] = None,
-        description: Optional[str] = None,
-        error: Optional[ParseError] = None,
-    ):
-        self.position = position
-        self.result = result
-        self.description = description
-        self.error = error
-
-    def __getitem__(
-        self, item: int
-    ) -> Union[Position, Optional[T], Optional[str], Optional[ParseError]]:
-        if item == 0:
-            return self.position
-        elif item == 1:
-            return self.result
-        elif item == 2:
-            return self.description
-        elif item == 3:
-            return self.error
-        else:
-            raise IndexError("ParserResult index out of range")
-
-    def __len__(self) -> int:
-        return 4
-
-    def __iter__(
-        self,
-    ) -> Iterator[Union[Position, Optional[T], Optional[str], Optional[ParseError]]]:
-        yield self.position
-        yield self.result
-        yield self.description
-        yield self.error
-
-    def __repr__(self) -> str:
-        return f"ParserResult(position={self.position}, result={self.result}, description={self.description}, error={self.error})"
-
-    def __eq__(self, other):
-        if not isinstance(other, ParserResult):
-            return False
-        return (
-            self.position == other.position
-            and self.result == other.result
-            and self.description == other.description
-            and self.error == other.error
-        )
-
-    def __bool__(self) -> bool:
-        if self.error is not None:
-            return False
-        return True
-
-    def update_on_failure(self, new_error: ParseError):
-        if self.error is None or new_error.position.index > self.error.position.index:
-            self.error = new_error
-
-
-ParserFn = Callable[[Stream[S], Position], ParserResult[T]]
-
-
-class Parser(Generic[S, T]):
-    """
-    A generic parser combinator class that encapsulates parsing logic and provides combinator
-    operations for building complex parsers. Each parser maintains a `description` attribute
-    for a human-readable DSL representation.
-    """
-
-    def __init__(
-        self,
-        parse_fn: Optional[ParserFn[S, T]] = None,
-        description: str = "",
-        frozen_description: bool = False,
-    ):
-        """
-        Initialize the parser with a parsing function and an optional description.
-
-        Args:
-            parse_fn (ParserFn[S, T]): A function that takes a stream and position, and returns a parsing result.
-            description (Optional[str]): A human-readable description of the parser.
-        """
-        self.parse_fn = parse_fn
-        self.description = description
-        self.frozen_description = frozen_description
-
-    def define(self: "Parser[S, T]", other: "Parser[S, U]") -> "Parser[S, U]":
-        self.parse_fn = other.parse_fn
-        self.description = other.description
-        return self
-
-    def freeze_description(self: "Parser[S, T]", value: bool = True) -> "Parser[S, T]":
-        self.frozen_description = value
-        return self
-
-    def set_description(self: "Parser[S, T]", description: str) -> "Parser[S, T]":
-        if not self.frozen_description:
-            self.description = description
-        return self
-
-    def describe(self: "Parser[S, T]", description: str) -> "Parser[S, T]":
-        # Wrap the existing parse_fn to update error.expected and description dynamically
-        original_parse_fn = self.parse_fn
-
-        def new_parse_fn(stream: Stream[S], position: Position) -> ParserResult[T]:
-            result = original_parse_fn(stream, position)
-            if result.error:
-                result.error.expected = description
-            if result.description:
-                result.description = description
-            return result
-
-        self.parse_fn = new_parse_fn
-        self.description = description
-        return self
-
-    def __call__(
-        self, stream: Stream[S], position: Position = Position(0)
-    ) -> ParserResult[T]:
-        """
-        Invoke the parser on the given stream starting at the given position.
-
-        Args:
-            stream (Stream[S]): The input stream to parse.
-            position (Position): The starting position in the stream.
-
-        Returns:
-            ParserResult[T]: The parsing result with updated position, result, and error information.
-        """
-
-        try:
-            result = self.parse_fn(stream, position)
-            return result
-        except ParseError as e:
-            return ParserResult(position=e.position, error=e)
-
-    def __str__(self) -> str:
-        return self.description
-
-    def __repr__(self) -> str:
-        return f"Parser({self.description})"
-
-    def __or__(self, other: Union["Parser[S, T]", S]) -> "Parser[S, T]":
-        """
-        Combine this parser with another parser as an alternative.
-        """
-        if not isinstance(other, Parser):
-            other = self._auto_convert(other)
-
-        description = f"({self.description} | {other.description})"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[T]:
-            result1 = self.parse_fn(stream, position)
-            if result1:
-                return result1
-
-            result2 = other.parse_fn(stream, position)
-            if result2:
-                return result2
-
-            # Both failed
-            if result1.error and result2.error:
-                pos1 = result1.error.position.index
-                pos2 = result2.error.position.index
-                if pos1 > pos2:
-                    return ParserResult(
-                        position=result1.error.position, error=result1.error
-                    )
-                elif pos2 > pos1:
-                    return ParserResult(
-                        position=result2.error.position, error=result2.error
-                    )
-                else:
-                    # Same failure position: combine them using 'description'
-                    found_char = None
-                    if position.index < len(stream):
-                        found_char = stream[position.index]
-                    return ParserResult(
-                        position=position,
-                        error=ParseError(position, description, found_char),
-                    )
-            # Fallback
-            return ParserResult(
-                position=position, error=ParseError(position, description, None)
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def map(
-        self, mapper: Union[Callable[[T], U], Callable[[T, Position], U]]
-    ) -> "Parser[S, U]":
-        """
-        Transform the result of this parser using a mapping function.
-
-        Args:
-            mapper (Callable[[T], U] or Callable[[T, Position], U]): A function to transform the parsed result.
-
-        Returns:
-            Parser[S, U]: A parser with the transformed result.
-        """
-        name = "unknown" if not hasattr(mapper, "__name__") else mapper.__name__
-
-        description = f"({self.description} @ {name})"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[U]:
-            result = self.parse_fn(stream, position)
-            if not result:
-                return result  # Propagate failure
-
-            try:
-                params = len(signature(mapper).parameters)
-            except ValueError:
-                # Assume single argument mapper for built-in functions like int
-                params = 1
-
-            if params == 1:
-                mapped = mapper(result.result)
-            else:
-                mapped = mapper(result.result, result.position)
-
-            return ParserResult(
-                position=result.position, result=mapped, description=description
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def __matmul__(
-        self, mapper: Union[Callable[[T], U], Callable[[T], U]]
-    ) -> "Parser[S, U]":
-        return self.map(mapper).set_description(self.description)
-
-    def __imatmul__(
-        self, mapper: Union[Callable[[T], U], Callable[[T], U]]
-    ) -> "Parser[S, U]":
-        return self.map(mapper)
-
-    def __add__(
-        self, other: Union["Parser[S, U]", S]
-    ) -> "Parser[S, List[Union[T, U]]]":
-        """
-        Sequence this parser with another parser, combining their results into a single list.
-
-        Args:
-            other (Union[Parser[S, U], S]): Another parser or value to sequence with this parser.
-
-        Returns:
-            Parser[S, List[Union[T, U]]]: A parser that combines the results of both parsers into a list.
-        """
-        if not isinstance(other, Parser):
-            other = self._auto_convert(other)
-
-        description = f"({self.description} + {other.description})"
-
-        def parse(
-            stream: Stream[S], position: Position
-        ) -> ParserResult[List[Union[T, U]]]:
-            result1 = self.parse_fn(stream, position)
-            if not result1:
-                return result1  # Propagate failure
-            result2 = other.parse_fn(stream, result1.position)
-            if not result2:
-                return result2  # Propagate failure
-            # Combine results into a flat list
-            combined_result = []
-            if isinstance(result1.result, list):
-                combined_result.extend(result1.result)
-            elif result1.result is not None:
-                combined_result.append(result1.result)
-            if isinstance(result2.result, list):
-                combined_result.extend(result2.result)
-            elif result2.result is not None:
-                combined_result.append(result2.result)
-            return ParserResult(
-                position=result2.position,
-                result=combined_result,
-                description=description,
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def __mul__(self, times: int) -> "Parser[S, List[T]]":
-        """
-        Repeat this parser a fixed number of times.
-
-        Args:
-            times (int): Number of repetitions.
-
-        Returns:
-            Parser[S, List[T]]: A parser that matches the pattern the specified number of times.
-        """
-        return self.many(min=times, max=times)
-
-    def optional(self) -> "Parser[S, Optional[T]]":
-        """
-        Make this parser optional.
-
-        Returns:
-            Parser[S, Optional[T]]: A parser that returns the result or None without failing.
-        """
-        description = f"{self.description}?"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[Optional[T]]:
-            result = self.parse_fn(stream, position)
-            if result:
-                return result
-            return ParserResult(position=position, result=None, description=description)
-
-        return Parser(parse, description=description).set_description(description)
-
-    def __invert__(self) -> "Parser[S, Optional[T]]":
-        return self.optional()
-
-    def not_(self) -> "Parser[S, Optional[S]]":
-        description = f"not {self.description}"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[Optional[S]]:
-            result = self.parse_fn(stream, position)
-            if result:
-                # The parser succeeded, so `not_` negates to failure
-                error = ParseError(position, description, result.result)
-                return ParserResult(position=position, error=error)
-            # The parser failed, so `not_` succeeds by consuming no input
-            return ParserResult(position=position, result=None, description=description)
-
-        return Parser(parse, description=description).set_description(description)
-
-    def __pos__(self) -> "Parser[S, List[T]]":
-        return self.many(1)
-
-    def many(self, min: int = 0, max: Optional[int] = None) -> "Parser[S, List[T]]":
-        """
-        Match this parser repeatedly.
-
-        Args:
-            min (int): Minimum number of repetitions.
-            max (Optional[int]): Maximum number of repetitions.
-
-        Returns:
-            Parser[S, List[T]]: A parser that matches the pattern repeatedly within the specified bounds.
-        """
-        if min == 0 and max is None:
-            description = f"{self.description}*"
-        elif min == 1 and max is None:
-            description = f"{self.description}+"
-        elif max is None:
-            description = f"{self.description}{{{min}}}"
-        else:
-            description = f"{self.description}{{{min}, {max}}}"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[List[T]]:
-            current_position = position
-            results = []
-            count = 0
-
-            while (max is None or count < max) and current_position.index < len(stream):
-                result = self.parse_fn(stream, current_position)
-                if not result:
-                    break
-                results.append(result.result)
-                current_position = result.position
-                count += 1
-
-            if count < min:
-                error = ParseError(
-                    position=current_position,
-                    expected=f"at least {min} repetitions of {self.description}",
-                    found=None,
-                )
-                return ParserResult(position=current_position, error=error)
-
-            return ParserResult(
-                position=current_position, result=results, description=description
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def until(self, stopping_parser: Union["Parser[S, V]", S]) -> "Parser[S, List[T]]":
-        """
-        Create a parser that consumes input until the specified parser matches.
-
-        Args:
-            stopping_parser (Union[Parser[S, V], S]): The parser that indicates when to stop.
-
-        Returns:
-            Parser[S, List[T]]: A parser that collects results until the stopping parser matches.
-        """
-        if not isinstance(stopping_parser, Parser):
-            stopping_parser = self._auto_convert(stopping_parser)
-
-        description = f"({self.description} until {stopping_parser.description})"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[List[T]]:
-            results = []
-            current_position = position
-
-            while current_position.index < len(stream):
-                stop_result = stopping_parser.parse_fn(stream, current_position)
-                if stop_result and stop_result.result is not None:
-                    return ParserResult(
-                        position=current_position,
-                        result=results,
-                        description=description,
-                    )
-                # Consume one element
-                any_result = anything.parse_fn(stream, current_position)
-                if not any_result:
-                    break  # Cannot consume further
-                results.append(any_result.result)
-                current_position = any_result.position
-
-            error = ParseError(
-                position=current_position,
-                expected=f"stopping condition {stopping_parser.description}",
-                found=None,
-            )
-            return ParserResult(position=current_position, error=error)
-
-        return Parser(parse, description=description).set_description(description)
-
-    def sep_by(self, separator: Union["Parser[S, U]", S]) -> "Parser[S, List[T]]":
-        """
-        Create a parser that matches this parser separated by a specified separator.
-
-        Args:
-            separator (Union[Parser[S, U], S]): The separator parser or element.
-
-        Returns:
-            Parser[S, List[T]]: A parser that matches a list of elements separated by the separator.
-        """
-        if not isinstance(separator, Parser):
-            separator = self._auto_convert(separator)
-
-        description = f"({self.description} sep_by {separator.description})"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[List[T]]:
-            results = []
-            current_position = position
-
-            first_result = self.parse_fn(stream, current_position)
-            if not first_result:
-                # No matches, return empty list
-                return ParserResult(
-                    position=position, result=[], description=description
-                )
-
-            results.append(first_result.result)
-            current_position = first_result.position
-
-            while current_position.index < len(stream):
-                sep_result = separator.parse_fn(stream, current_position)
-                if not sep_result:
-                    break  # No more separators
-
-                current_position = sep_result.position
-
-                element_result = self.parse_fn(stream, current_position)
-                if not element_result:
-                    break  # Separator found but no element after it
-
-                results.append(element_result.result)
-                current_position = element_result.position
-
-            return ParserResult(
-                position=current_position, result=results, description=description
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def __rshift__(self, other: Union["Parser[S, U]", S]) -> "Parser[S, U]":
-        """
-        Right-associative sequencing: Combine with another parser but keep only the result of the second parser.
-        """
-        if not isinstance(other, Parser):
-            other = self._auto_convert(other)
-
-        description = f"({self.description} >> {other.description})"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[U]:
-            result1 = self.parse_fn(stream, position)
-            if not result1:
-                return result1  # Propagate failure
-            result2 = other.parse_fn(stream, result1.position)
-            if not result2:
-                return result2  # Propagate failure
-            return ParserResult(
-                position=result2.position,
-                result=result2.result,
-                description=description,
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def __lshift__(self, other: Union["Parser[S, U]", S]) -> "Parser[S, T]":
-        """
-        Left-associative sequencing: Combine with another parser but keep only the result of the first parser.
-        """
-        if not isinstance(other, Parser):
-            other = self._auto_convert(other)
-
-        description = f"({self.description} << {other.description})"
-
-        def parse(stream: Stream[S], position: Position) -> ParserResult[T]:
-            result1 = self.parse_fn(stream, position)
-            if not result1:
-                return result1  # Propagate failure
-            result2 = other.parse_fn(stream, result1.position)
-            if not result2:
-                return result2  # Propagate failure
-            return ParserResult(
-                position=result2.position,
-                result=result1.result,
-                description=description,
-            )
-
-        return Parser(parse, description=description).set_description(description)
-
-    def expect(self, expected: str) -> "Parser[S, T]":
-        """
-        Attach an explicit expectation to this parser for better error messages.
-
-        Args:
-            expected (str): Description of what is expected.
-
-        Returns:
-            Parser[S, T]: The parser with the attached expectation.
-        """
-
-        def new_parse_fn(stream: Stream[S], position: Position) -> ParserResult[T]:
-            result = self.parse_fn(stream, position)
-            if result:
-                return result
-            # If failed, attach the expectation
-            error = ParseError(position, expected, None)
-            return ParserResult(position=position, error=error)
-
-        self.parse_fn = new_parse_fn
-        self.description = expected
-        return self
+    value: Any
+    furthest: int
+    expected: FrozenSet[str]
 
     @staticmethod
-    def _auto_convert(item: S) -> "Parser[S, S]":
-        """
-        Automatically convert an item into a parser if it is not already a parser.
+    def success(index, value):
+        return Result(True, index, value, -1, frozenset())
 
-        Args:
-            item (S): The item to convert.
+    @staticmethod
+    def failure(index, expected):
+        return Result(False, -1, None, index, frozenset([expected]))
 
-        Returns:
-            Parser[S, S]: The converted parser.
-        """
-        if isinstance(item, Parser):
-            return item
-        return match(item)
+    # collect the furthest failure from self and other
+    def aggregate(self, other):
+        if not other:
+            return self
 
-
-# Utility functions to create basic parsers
-
-
-def match(element: S) -> Parser[S, S]:
-    """
-    Create a parser that matches a specific single element.
-
-    Args:
-        element (S): The element to match.
-
-    Returns:
-        Parser[S, S]: A parser that matches the specified element.
-    """
-
-    def parse(s: Stream[S], position: Position) -> ParserResult[S]:
-        if position.index >= len(s):
-            error = ParseError(position, repr(element), None)
-            return ParserResult(position=position, error=error)
-        current_element = s[position.index]
-        if current_element == element:
-            new_position = position.advance(current_element)
-            return ParserResult(
-                position=new_position, result=current_element, description=repr(element)
+        if self.furthest > other.furthest:
+            return self
+        elif self.furthest == other.furthest:
+            # if we both have the same failure index, we combine the expected messages.
+            return Result(
+                self.status,
+                self.index,
+                self.value,
+                self.furthest,
+                self.expected | other.expected,
             )
-        error = ParseError(position, repr(element), current_element)
-        return ParserResult(position=position, error=error)
+        else:
+            return Result(
+                self.status, self.index, self.value, other.furthest, other.expected
+            )
 
-    return Parser(parse, repr(element))
 
-
-def match_fn(predicate: Callable[[S], bool]) -> Parser[S, S]:
+class Parser:
     """
-    Create a parser that matches elements in the stream based on a predicate function.
-
-    Args:
-        predicate (Callable[[S], bool]): A function that takes an element of the stream and returns True if it matches.
-
-    Returns:
-        Parser[S, S]: A parser that matches based on the predicate.
+    A Parser is an object that wraps a function whose arguments are
+    a string to be parsed and the index on which to begin parsing.
+    The function should return either Result.success(next_index, value),
+    where the next index is where to continue the parse and the value is
+    the yielded value, or Result.failure(index, expected), where expected
+    is a string indicating what was expected, and the index is the index
+    of the failure.
     """
 
-    # Handle lambda functions which might not have a __name__
-    if hasattr(predicate, "__name__"):
-        predicate_name = predicate.__name__
+    def __init__(self, wrapped_fn: Callable[[str | bytes | list, int], Result]):
+        """
+        Creates a new Parser from a function that takes a stream
+        and returns a Result.
+        """
+        self.wrapped_fn = wrapped_fn
+
+    def __call__(self, stream: str | bytes | list, index: int):
+        return self.wrapped_fn(stream, index)
+
+    def parse(self, stream: str | bytes | list) -> Any:
+        """Parses a string or list of tokens and returns the result or raise a ParseError."""
+        (result, _) = (self << eof).parse_partial(stream)
+        return result
+
+    def parse_partial(
+        self, stream: str | bytes | list
+    ) -> tuple[Any, str | bytes | list]:
+        """
+        Parses the longest possible prefix of a given string.
+        Returns a tuple of the result and the unparsed remainder,
+        or raises ParseError
+        """
+        result = self(stream, 0)
+
+        if result.status:
+            return (result.value, stream[result.index :])
+        else:
+            raise ParseError(result.expected, stream, result.furthest)
+
+    def bind(self, bind_fn):
+        @Parser
+        def bound_parser(stream, index):
+            result = self(stream, index)
+
+            if result.status:
+                next_parser = bind_fn(result.value)
+                return next_parser(stream, result.index).aggregate(result)
+            else:
+                return result
+
+        return bound_parser
+
+    def map(self, map_function: Callable) -> Parser:
+        """
+        Returns a parser that transforms the produced value of the initial parser with map_function.
+        """
+        return self.bind(lambda res: success(map_function(res)))
+
+    def combine(self, combine_fn: Callable) -> Parser:
+        """
+        Returns a parser that transforms the produced values of the initial parser
+        with ``combine_fn``, passing the arguments using ``*args`` syntax.
+
+        The initial parser should return a list/sequence of parse results.
+        """
+        return self.bind(lambda res: success(combine_fn(*res)))
+
+    def combine_dict(self, combine_fn: Callable) -> Parser:
+        """
+        Returns a parser that transforms the value produced by the initial parser
+        using the supplied function/callable, passing the arguments using the
+        ``**kwargs`` syntax.
+
+        The value produced by the initial parser must be a mapping/dictionary from
+        names to values, or a list of two-tuples, or something else that can be
+        passed to the ``dict`` constructor.
+
+        If ``None`` is present as a key in the dictionary it will be removed
+        before passing to ``fn``, as will all keys starting with ``_``.
+        """
+        return self.bind(
+            lambda res: success(
+                combine_fn(
+                    **{
+                        k: v
+                        for k, v in dict(res).items()
+                        if k is not None
+                        and not (isinstance(k, str) and k.startswith("_"))
+                    }
+                )
+            )
+        )
+
+    def concat(self) -> Parser:
+        """
+        Returns a parser that concatenates together (as a string) the previously
+        produced values.
+        """
+        return self.map("".join)
+
+    def then(self, other: Parser) -> Parser:
+        """
+        Returns a parser which, if the initial parser succeeds, will
+        continue parsing with ``other``. This will produce the
+        value produced by ``other``.
+
+        """
+        return seq(self, other).combine(lambda left, right: right)
+
+    def skip(self, other: Parser) -> Parser:
+        """
+        Returns a parser which, if the initial parser succeeds, will
+        continue parsing with ``other``. It will produce the
+        value produced by the initial parser.
+        """
+        return seq(self, other).combine(lambda left, right: left)
+
+    def result(self, value: Any) -> Parser:
+        """
+        Returns a parser that, if the initial parser succeeds, always produces
+        the passed in ``value``.
+        """
+        return self >> success(value)
+
+    def many(self) -> Parser:
+        """
+        Returns a parser that expects the initial parser 0 or more times, and
+        produces a list of the results.
+        """
+        return self.times(0, float("inf"))
+
+    def times(self, min: int, max: int = None) -> Parser:
+        """
+        Returns a parser that expects the initial parser at least ``min`` times,
+        and at most ``max`` times, and produces a list of the results. If only one
+        argument is given, the parser is expected exactly that number of times.
+        """
+        if max is None:
+            max = min
+
+        @Parser
+        def times_parser(stream, index):
+            values = []
+            times = 0
+            result = None
+
+            while times < max:
+                result = self(stream, index).aggregate(result)
+                if result.status:
+                    values.append(result.value)
+                    index = result.index
+                    times += 1
+                elif times >= min:
+                    break
+                else:
+                    return result
+
+            return Result.success(index, values).aggregate(result)
+
+        return times_parser
+
+    def at_most(self, n: int) -> Parser:
+        """
+        Returns a parser that expects the initial parser at most ``n`` times, and
+        produces a list of the results.
+        """
+        return self.times(0, n)
+
+    def at_least(self, n: int) -> Parser:
+        """
+        Returns a parser that expects the initial parser at least ``n`` times, and
+        produces a list of the results.
+        """
+        return self.times(n) + self.many()
+
+    def optional(self, default: Any = None) -> Parser:
+        """
+        Returns a parser that expects the initial parser zero or once, and maps
+        the result to a given default value in the case of no match. If no default
+        value is given, ``None`` is used.
+        """
+        return self.times(0, 1).map(lambda v: v[0] if v else default)
+
+    def until(
+        self,
+        other: Parser,
+        min: int = 0,
+        max: int = float("inf"),
+        consume_other: bool = False,
+    ) -> Parser:
+        """
+        Returns a parser that expects the initial parser followed by ``other``.
+        The initial parser is expected at least ``min`` times and at most ``max`` times.
+        By default, it does not consume ``other`` and it produces a list of the
+        results excluding ``other``. If ``consume_other`` is ``True`` then
+        ``other`` is consumed and its result is included in the list of results.
+        """
+
+        @Parser
+        def until_parser(stream, index):
+            values = []
+            times = 0
+            while True:
+
+                # try parser first
+                res = other(stream, index)
+                if res.status and times >= min:
+                    if consume_other:
+                        # consume other
+                        values.append(res.value)
+                        index = res.index
+                    return Result.success(index, values)
+
+                # exceeded max?
+                if times >= max:
+                    # return failure, it matched parser more than max times
+                    return Result.failure(index, f"at most {max} items")
+
+                # failed, try parser
+                result = self(stream, index)
+                if result.status:
+                    # consume
+                    values.append(result.value)
+                    index = result.index
+                    times += 1
+                elif times >= min:
+                    # return failure, parser is not followed by other
+                    return Result.failure(index, "did not find other parser")
+                else:
+                    # return failure, it did not match parser at least min times
+                    return Result.failure(
+                        index, f"at least {min} items; got {times} item(s)"
+                    )
+
+        return until_parser
+
+    def sep_by(self, sep: Parser, *, min: int = 0, max: int = float("inf")) -> Parser:
+        """
+        Returns a new parser that repeats the initial parser and
+        collects the results in a list. Between each item, the ``sep`` parser
+        is run (and its return value is discarded). By default it
+        repeats with no limit, but minimum and maximum values can be supplied.
+        """
+        zero_times = success([])
+        if max == 0:
+            return zero_times
+        res = self.times(1) + (sep >> self).times(min - 1, max - 1)
+        if min == 0:
+            res |= zero_times
+        return res
+
+    def desc(self, description: str) -> Parser:
+        """
+        Returns a new parser with a description added, which is used in the error message
+        if parsing fails.
+        """
+
+        @Parser
+        def desc_parser(stream, index):
+            result = self(stream, index)
+            if result.status:
+                return result
+            else:
+                return Result.failure(index, description)
+
+        return desc_parser
+
+    def mark(self) -> Parser:
+        """
+        Returns a parser that wraps the initial parser's result in a value
+        containing column and line information of the match, as well as the
+        original value. The new value is a 3-tuple:
+
+        ((start_row, start_column),
+         original_value,
+         (end_row, end_column))
+        """
+
+        @generate
+        def marked():
+            start = yield line_info
+            body = yield self
+            end = yield line_info
+            return (start, body, end)
+
+        return marked
+
+    def tag(self, name: str) -> Parser:
+        """
+        Returns a parser that wraps the produced value of the initial parser in a
+        2 tuple containing ``(name, value)``. This provides a very simple way to
+        label parsed components
+        """
+        return self.map(lambda v: (name, v))
+
+    def should_fail(self, description: str) -> Parser:
+        """
+        Returns a parser that fails when the initial parser succeeds, and succeeds
+        when the initial parser fails (consuming no input). A description must
+        be passed which is used in parse failure messages.
+
+        This is essentially a negative lookahead
+        """
+
+        @Parser
+        def fail_parser(stream, index):
+            res = self(stream, index)
+            if res.status:
+                return Result.failure(index, description)
+            return Result.success(index, res)
+
+        return fail_parser
+
+    def __add__(self, other: Parser) -> Parser:
+        return seq(self, other).combine(operator.add)
+
+    def __mul__(self, other: Parser) -> Parser:
+        if isinstance(other, range):
+            return self.times(other.start, other.stop - 1)
+        return self.times(other)
+
+    def __or__(self, other: Parser) -> Parser:
+        return alt(self, other)
+
+    # haskelley operators, for fun #
+
+    # >>
+    def __rshift__(self, other: Parser) -> Parser:
+        return self.then(other)
+
+    # <<
+    def __lshift__(self, other: Parser) -> Parser:
+        return self.skip(other)
+
+
+def alt(*parsers: Parser) -> Parser:
+    """
+    Creates a parser from the passed in argument list of alternative
+    parsers, which are tried in order, moving to the next one if the
+    current one fails.
+    """
+    if not parsers:
+        return fail("<empty alt>")
+
+    @Parser
+    def alt_parser(stream, index):
+        result = None
+        for parser in parsers:
+            result = parser(stream, index).aggregate(result)
+            if result.status:
+                return result
+
+        return result
+
+    return alt_parser
+
+
+def seq(*parsers: Parser, **kw_parsers: Parser) -> Parser:
+    """
+    Takes a list of parsers, runs them in order,
+    and collects their individuals results in a list,
+    or in a dictionary if you pass them as keyword arguments.
+    """
+    if not parsers and not kw_parsers:
+        return success([])
+
+    if parsers and kw_parsers:
+        raise ValueError(
+            "Use either positional arguments or keyword arguments with seq, not both"
+        )
+
+    if parsers:
+
+        @Parser
+        def seq_parser(stream, index):
+            result = None
+            values = []
+            for parser in parsers:
+                result = parser(stream, index).aggregate(result)
+                if not result.status:
+                    return result
+                index = result.index
+                values.append(result.value)
+            return Result.success(index, values).aggregate(result)
+
+        return seq_parser
     else:
-        predicate_name = "<lambda>"
 
-    description = f"fn`{predicate_name}`"
+        @Parser
+        def seq_kwarg_parser(stream, index):
+            result = None
+            values = {}
+            for name, parser in kw_parsers.items():
+                result = parser(stream, index).aggregate(result)
+                if not result.status:
+                    return result
+                index = result.index
+                values[name] = result.value
+            return Result.success(index, values).aggregate(result)
 
-    def parse(s: Stream[S], position: Position) -> ParserResult[S]:
-        if position.index >= len(s):
-            error = ParseError(position, description, None)
-            return ParserResult(position=position, error=error)
-        current_element = s[position.index]
-        if predicate(current_element):
-            new_position = position.advance(current_element)
-            return ParserResult(
-                position=new_position, result=current_element, description=description
-            )
-        error = ParseError(position, description, current_element)
-        return ParserResult(position=position, error=error)
-
-    return Parser(parse, description)
+        return seq_kwarg_parser
 
 
-def _anything() -> Parser[S, S]:
+def generate(fn) -> Parser:
     """
-    Create a parser that matches any single element.
+    Creates a parser from a generator function
+    """
+    if isinstance(fn, str):
+        return lambda f: generate(f).desc(fn)
 
-    Returns:
-        Parser[S, S]: A parser that matches any element.
+    @Parser
+    @wraps(fn)
+    def generated(stream, index):
+        # start up the generator
+        iterator = fn()
+
+        result = None
+        value = None
+        try:
+            while True:
+                next_parser = iterator.send(value)
+                result = next_parser(stream, index).aggregate(result)
+                if not result.status:
+                    return result
+                value = result.value
+                index = result.index
+        except StopIteration as stop:
+            returnVal = stop.value
+            if isinstance(returnVal, Parser):
+                return returnVal(stream, index).aggregate(result)
+
+            return Result.success(index, returnVal).aggregate(result)
+
+    return generated
+
+
+index = Parser(lambda _, index: Result.success(index, index))
+line_info = Parser(
+    lambda stream, index: Result.success(index, line_info_at(stream, index))
+)
+
+
+def success(value: Any) -> Parser:
+    """
+    Returns a parser that does not consume any of the stream, but
+    produces ``value``.
+    """
+    return Parser(lambda _, index: Result.success(index, value))
+
+
+def fail(expected: str) -> Parser:
+    """
+    Returns a parser that always fails with the provided error message.
+    """
+    return Parser(lambda _, index: Result.failure(index, expected))
+
+
+def string(expected_string: str, transform: Callable[[str], str] = noop) -> Parser:
+    """
+    Returns a parser that expects the ``expected_string`` and produces
+    that string value.
+
+    Optionally, a transform function can be passed, which will be used on both
+    the expected string and tested string.
     """
 
-    def parse(s: Stream[S], position: Position) -> ParserResult[S]:
-        if position.index >= len(s):
-            error = ParseError(position, "any element", None)
-            return ParserResult(position=position, error=error)
-        current_element = s[position.index]
-        new_position = position.advance(current_element)
-        return ParserResult(
-            position=new_position, result=current_element, description="."
-        )
+    slen = len(expected_string)
+    transformed_s = transform(expected_string)
 
-    return Parser(parse, ".")
+    @Parser
+    def string_parser(stream, index):
+        if transform(stream[index : index + slen]) == transformed_s:
+            return Result.success(index + slen, expected_string)
+        else:
+            return Result.failure(index, expected_string)
 
-
-anything = _anything()
+    return string_parser
 
 
-def sequence(*elements: Union[Parser[S, U], S]) -> Parser[S, List[U]]:
+def regex(exp: str, flags=0, group: int | str | tuple = 0) -> Parser:
     """
-    Create a parser that matches a sequence of parsers.
+    Returns a parser that expects the given ``exp``, and produces the
+    matched string. ``exp`` can be a compiled regular expression, or a
+    string which will be compiled with the given ``flags``.
 
-    Args:
-        elements (Union[Parser[S, U], S]): The parsers or elements to sequence.
-
-    Returns:
-        Parser[S, List[U]]: A parser that parses the input sequentially with the given parsers.
+    Optionally, accepts ``group``, which is passed to re.Match.group
+    https://docs.python.org/3/library/re.html#re.Match.group> to
+    return the text from a capturing group in the regex instead of the
+    entire match.
     """
-    return reduce(
-        lambda a, b: a + b, map(Parser._auto_convert, elements)
-    ).set_description(f'sequence of {" ".join(map(str, elements))}')
+
+    if isinstance(exp, (str, bytes)):
+        exp = re.compile(exp, flags)
+    if isinstance(group, (str, int)):
+        group = (group,)
+
+    @Parser
+    def regex_parser(stream, index):
+        match = exp.match(stream, index)
+        if match:
+            return Result.success(match.end(), match.group(*group))
+        else:
+            return Result.failure(index, exp.pattern)
+
+    return regex_parser
 
 
-def any_of(*elements: Union[Parser[S, U], S]) -> Parser[S, S]:
+def test_item(func: Callable[..., bool], description: str) -> Parser:
     """
-    Create a parser that matches any one of the specified elements.
-
-    Args:
-        elements (Union[Parser[S, U], S]): The parsers or elements to match.
-
-    Returns:
-        Parser[S, S]: A parser that matches one of the elements.
+    Returns a parser that tests a single item from the list of items being
+    consumed, using the callable ``func``. If ``func`` returns ``True``, the
+    parse succeeds, otherwise the parse fails with the description
+    ``description``.
     """
-    return reduce(
-        lambda a, b: a | b, map(Parser._auto_convert, elements)
-    ).set_description(f"({' | '.join(map(str, elements))})")
+
+    @Parser
+    def test_item_parser(stream, index):
+        if index < len(stream):
+            if isinstance(stream, bytes):
+                # Subscripting bytes with `[index]` instead of
+                # `[index:index + 1]` returns an int
+                item = stream[index : index + 1]
+            else:
+                item = stream[index]
+            if func(item):
+                return Result.success(index + 1, item)
+        return Result.failure(index, description)
+
+    return test_item_parser
 
 
-def any_of_enum(*enum_classes: Type[TEnum]) -> Parser[S, TEnum]:
+def test_char(func: Callable[..., bool], description: str) -> Parser:
     """
-    Create a parser that matches any member of the specified Enums.
-
-    Args:
-        *enum_classes (Type[TEnum]): The Enum classes to transform into a parser.
-
-    Returns:
-        Parser[S, TEnum]: A parser that matches one of the members from the Enums.
+    Returns a parser that tests a single character with the callable
+    ``func``. If ``func`` returns ``True``, the parse succeeds, otherwise
+    the parse fails with the description ``description``.
     """
-    return (
-        any_of(
-            *[
-                match(enum_member.value)
-                for enum_cls in enum_classes
-                for enum_member in enum_cls
-            ]
-        )
-        .map(
-            lambda x: next(
-                enum_member
-                for enum_cls in enum_classes
-                for enum_member in enum_cls
-                if enum_member.value == x
-            )
-        )
-        .set_description(
-            f"one of {', '.join(enum_cls.__name__ for enum_cls in enum_classes)} members"
+    # Implementation is identical to test_item
+    return test_item(func, description)
+
+
+def match_item(item: Any, description: str = None) -> Parser:
+    """
+    Returns a parser that tests the next item (or character) from the stream (or
+    string) for equality against the provided item. Optionally a string
+    description can be passed.
+    """
+
+    if description is None:
+        description = str(item)
+    return test_item(lambda i: item == i, description)
+
+
+def string_from(*strings: str, transform: Callable[[str], str] = noop):
+    """
+    Accepts a sequence of strings as positional arguments, and returns a parser
+    that matches and returns one string from the list. The list is first sorted
+    in descending length order, so that overlapping strings are handled correctly
+    by checking the longest one first.
+    """
+    # Sort longest first, so that overlapping options work correctly
+    return alt(*(string(s, transform) for s in sorted(strings, key=len, reverse=True)))
+
+
+def char_from(string: str | bytes):
+    """
+    Accepts a string and returns a parser that matches and returns one character
+    from the string.
+    """
+    if isinstance(string, bytes):
+        return test_char(lambda c: c in string, b"[" + string + b"]")
+    else:
+        return test_char(lambda c: c in string, "[" + string + "]")
+
+
+def peek(parser: Parser) -> Parser:
+    """
+    Returns a lookahead parser that parses the input stream without consuming
+    chars.
+    """
+
+    @Parser
+    def peek_parser(stream, index):
+        result = parser(stream, index)
+        if result.status:
+            return Result.success(index, result.value)
+        else:
+            return result
+
+    return peek_parser
+
+
+any_char = test_char(lambda c: True, "any character")
+
+whitespace = regex(r"\s+")
+
+letter = test_char(lambda c: c.isalpha(), "a letter")
+
+digit = test_char(lambda c: c.isdigit(), "a digit")
+
+decimal_digit = char_from("0123456789")
+
+
+@Parser
+def eof(stream, index):
+    """
+    A parser that only succeeds if the end of the stream has been reached.
+    """
+
+    if index >= len(stream):
+        return Result.success(index, None)
+    else:
+        return Result.failure(index, "EOF")
+
+
+def from_enum(enum_cls: type[enum.Enum], transform=noop) -> Parser:
+    """
+    Given a class that is an enum.Enum class
+    https://docs.python.org/3/library/enum.html , returns a parser that
+    will parse the values (or the string representations of the values)
+    and return the corresponding enum item.
+    """
+
+    items = sorted(
+        ((str(enum_item.value), enum_item) for enum_item in enum_cls),
+        key=lambda t: len(t[0]),
+        reverse=True,
+    )
+    return alt(
+        *(
+            string(value, transform=transform).result(enum_item)
+            for value, enum_item in items
         )
     )
-
-
-def expect(parser: Parser[S, T], expected: str) -> Parser[S, T]:
-    """
-    Decorator to attach an expectation to a parser.
-
-    Args:
-        parser (Parser[S, T]): The parser to decorate.
-        expected (str): The expected description.
-
-    Returns:
-        Parser[S, T]: The decorated parser.
-    """
-    return parser.expect(expected)
-
-
-def parser(fn: ParserFn[S, T]) -> Parser[S, T]:
-    """
-    Decorator to convert a parsing function into a Parser object.
-
-    Args:
-        fn (ParserFn[S, T]): The parsing function to wrap.
-
-    Returns:
-        Parser[S, T]: The wrapped parser object.
-    """
-    return Parser(fn)
-
-
-def report_error(stream: Stream[S], error: ParseError) -> str:
-    """
-    Format and present the parsing error in a user-friendly manner.
-
-    Args:
-        stream (Stream[S]): The input stream being parsed.
-        error (ParseError): The parsing error to report.
-
-    Returns:
-        str: A formatted error message.
-    """
-    return str(error)

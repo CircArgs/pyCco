@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from pycco.visitor import Visitor, CompilationContext
 
 
-def get_compiler_backend(backend: str) -> "CompilationContext":
+def get_compiler_backend(backend: str) -> Tuple["CompilationContext", "Visitor"]:
     if backend.strip() in ("arm_v8", "armv8", "arm8"):
         from pycco.backends.armv8 import compiler
 
@@ -597,7 +597,14 @@ class Node(ABC):
         return visitor(ctx, self)
 
 
-class Expression(Node): ...
+class Expression(Node):
+    def type(self) -> "Type":
+        raise NotImplementedError()
+
+    def parenthesize(self) -> str:
+        if isinstance(self.parent, Parens):
+            return False
+        return True
 
 
 class Statement(Node): ...
@@ -625,38 +632,31 @@ class Type(Statement):
     name: str
     pointer: bool = False
 
+    def set_pointer(self):
+        self.pointer = True
+        return self
+
     def __str__(self):
         pointer = "" if not self.pointer else "*"
         return f"{self.name}{pointer}"
 
 
 @dataclass
-class VariableDecl(Statement):
+class Variable(Statement):
     type: Type
     name: Ident
-    semicolon: bool = False
 
     def __str__(self):
-        semicolon = ";" if self.semicolon else ""
-        return f"{self.type} {self.name}{semicolon}"
+        return f"{self.type} {self.name}"
 
 
 @dataclass
 class Assign(Statement):
-    var: Ident | VariableDecl
-    to: Expression
+    var: Variable
+    value: Expression
 
     def __str__(self):
-        return f"{self.var} = {self.to};"
-
-
-@dataclass
-class Arg(Statement):
-    name: Ident
-    type: Type
-
-    def __str__(self):
-        return f"{self.type} {self.name}"
+        return f"{self.var} = {self.value};"
 
 
 @dataclass
@@ -670,7 +670,6 @@ class Return(Statement):
 @dataclass
 class Number(Expression):
     value: str
-    type: Type
 
     def __str__(self):
         return self.value
@@ -678,17 +677,17 @@ class Number(Expression):
 
 @dataclass
 class Function(Statement):
-    var: VariableDecl
-    args: List[Arg] = field(default_factory=list)
+    var: Variable
+    params: List[Variable] = field(default_factory=list)
     body: List[Expression | Statement] = field(default_factory=list)
     ret: Optional[Return] = None
 
     def __str__(self):
-        args = 'void' if not self.args else ", ".join(map(str, self.args))
-        body = "" if not self.body else "\n".join(map(lambda s: f"\t{s}", self.body))
-        ret = "" if self.ret is None else f"\t{self.ret}"
+        params = "void" if not self.params else ", ".join(map(str, self.params))
+        body = "" if not self.body else "\n".join(map(lambda s: f"  {s}", self.body))
+        ret = "" if self.ret is None else f"  {self.ret}"
         return f"""
-{self.var}({args})
+{self.var}({params})
 {{
 {body}
 {ret}
@@ -701,10 +700,16 @@ class Function(Statement):
 class FunctionCall(Expression):
     name: Ident  # The function being called
     args: List[Expression]  # The arguments passed to the function
+    statement: bool = False
+
+    def set_statement(self):
+        self.statement = True
+        return self
 
     def __str__(self):
         args_str = ", ".join(map(str, self.args))
-        return f"{self.name}({args_str})"
+        semicolon = ";" if self.statement else ""
+        return f"{self.name}({args_str}){semicolon}"
 
 
 @dataclass
@@ -730,20 +735,30 @@ class WhileLoop(Statement):
 @dataclass
 class BinaryOp(Expression):
     left: Expression
-    operator: str
+    op: str
     right: Expression
 
     def __str__(self):
-        return f"({self.left} {self.operator} {self.right})"
+        ret = f"{self.left} {self.op} {self.right}"
+        if self.parenthesize():
+            return f"({ret})"
+        return ret
 
 
 @dataclass
 class UnaryOp(Expression):
-    operator: str
-    operand: Expression
+    op: str
+    value: Expression
+    postfix: bool = False
 
     def __str__(self):
-        return f"({self.operator}{self.operand})"
+        if not self.postfix:
+            ret = f"{self.operator}{self.operand}"
+        else:
+            ret = f"{self.operand}{self.operator}"
+        if self.parenthesize:
+            return f"({ret})"
+        return ret
 
 
 @dataclass
@@ -783,7 +798,10 @@ class StructAccess(Expression):
 
 @dataclass
 class Parens(Expression):
-    inner: Union["Parens", Expression]
+    inner: Expression
 
     def __str__(self):
-        return f"({self.inner})"
+        ret = str(self.inner)
+        if self.parenthesize:
+            return f"({ret})"
+        return ret

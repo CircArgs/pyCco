@@ -1,6 +1,6 @@
 from pycco.ast import *
 from pycco.visitor import Visitor, CompilationContext, Compiler
-
+from typing import Union, Literal, Optional
 
 armv8 = Visitor()
 
@@ -11,8 +11,61 @@ class ArmCompilationContext(CompilationContext):
     E.g., label counters, symbol tables, CPU features, etc.
     """
 
+    # general registers to use
+
+    # Register Usage in Function Calls:
+    #     R0-R3 for passing arguments and returning values.
+    #     R4-R11 as callee-saved registers.
+    #     R12 as a temporary scratch register (often called "intra-procedure register").
+    # Stack Usage:
+    #     The stack pointer (SP, R13) must always be aligned to 8 bytes.
+    # Link Register (LR, R14):
+    #     Used to store the return address of a subroutine, and subroutines are expected to return using BX LR.
+
+    GP_REGISTERS_WORD = set(f"r{i}" for i in range(13))
+
+    # special registers
+
+    # Program Counter (PC, R15):
+    #     The processor fetches instructions from the address stored in R15. Modifying this register improperly will result in crashes or unexpected behavior.
+    # Status Registers (CPSR, SPSR):
+    #     Specific bits in the CPSR have defined purposes (e.g., condition flags, mode bits). Setting them incorrectly may put the CPU in an unusable state.
+    # Stack Pointer (SP, R13):
+    #     SP must point to valid memory; dereferencing an invalid SP will cause a fault.
+    SP_REGISTER = "sp"
+    PC_REGISTER = "pc"
+    LR_REGISTER = "lr"
+
     def __init__(self):
         self.labels_created = 0
+        self.used_registers: dict[str, Optional[str]] = {}
+
+    def use_register(self, r: str, tag: Optional[str] = None):
+        if r in self.used_registers:
+            raise ValueError(f"Register {r} already in use.")
+        self.used_registers[r] = tag
+
+    def free_register(self, r: str, tag: Optional[str] = None):
+        if not r in self.used_registers or self.used_registers[r] != tag:
+            raise ValueError(f"Register {r} not in use.")
+
+        del self.used_registers[r]
+
+    def get_free_register(
+        self,
+        tag: Optional[str] = None,
+        size: Union[Literal["WORD"], Literal["HALF"]] = "WORD",
+    ) -> str:
+        registers = (
+            self.GP_REGISTERS_HALFWORD
+            if size.upper() == "HALF"
+            else self.GP_REGISTERS_WORD
+        )
+        for r in registers:
+            if r not in self.used_registers:
+                self.use_register(r, tag)
+                return r
+        raise Exception("No free register.")
 
     def new_label(self, prefix="L"):
         """
@@ -21,6 +74,15 @@ class ArmCompilationContext(CompilationContext):
         lbl = f"{prefix}{self.labels_created}"
         self.labels_created += 1
         return lbl
+
+    def exit(self, code: int = 0):
+        return f"""
+    mov r0, #{code}
+    swi 0
+"""
+
+    def exit_success(self):
+        retur
 
 
 compiler: Compiler = lambda: (ArmCompilationContext(), armv8)
@@ -38,10 +100,10 @@ def visit_code(ctx: CompilationContext, node: Code) -> str:
 
     # Compile each statement
     for stmt in node.statements:
-        lines.append(arm(ctx, stmt))
+        lines.append(armv8(ctx, stmt))
 
     if node.main:
-        lines.append(arm(ctx, node.main))
+        lines.append(armv8(ctx, node.main))
     return "\n".join(lines)
 
 
@@ -79,7 +141,7 @@ def visit_assign(ctx: CompilationContext, node: Assign) -> str:
     """
     lines = []
     lines.append("@ Assignment")
-    rhs_code = arm(ctx, node.to)
+    rhs_code = armv8(ctx, node.to)
     lines.append(rhs_code)
 
     if isinstance(node.var, Ident):
@@ -103,7 +165,7 @@ def visit_return(ctx: CompilationContext, node: Return) -> str:
     """
     Evaluate the return expression and use 'MOV PC, LR' to return from the function.
     """
-    value_code = arm(ctx, node.value)
+    value_code = armv8(ctx, node.value)
     lines = []
     lines.append(value_code)
     lines.append("    MOV PC, LR    @ Return from function")
@@ -129,10 +191,10 @@ def visit_function(ctx: CompilationContext, node: Function) -> str:
     lines.append("    PUSH {LR}    @ Save link register")
 
     for stmt in node.body:
-        lines.append(arm(ctx, stmt))
+        lines.append(armv8(ctx, stmt))
 
     if node.ret:
-        lines.append(arm(ctx, node.ret))
+        lines.append(armv8(ctx, node.ret))
     else:
         lines.append("    POP {PC}    @ Return from function (no explicit return)")
 
@@ -147,7 +209,7 @@ def visit_functioncall(ctx: CompilationContext, node: FunctionCall) -> str:
     lines = []
     for i, arg in enumerate(node.args):
         lines.append(f"    @ Evaluate arg {i}")
-        lines.append(arm(ctx, arg))
+        lines.append(armv8(ctx, arg))
         lines.append(f"    MOV R{i}, R0    @ Move arg to R{i}")
 
     lines.append(f"    BL {node.name.name}    @ Call function {node.name.name}")
@@ -163,21 +225,21 @@ def visit_ifstatement(ctx: CompilationContext, node: IfStatement) -> str:
     end_label = ctx.new_label("endif")
     lines = []
 
-    cond_code = arm(ctx, node.condition)
+    cond_code = armv8(ctx, node.condition)
     lines.append(cond_code)
     lines.append("    CMP R0, #0")
     lines.append(f"    BEQ {else_label}")
 
     # Then branch
     for stmt in node.then_branch:
-        lines.append(arm(ctx, stmt))
+        lines.append(armv8(ctx, stmt))
     lines.append(f"    B {end_label}")
 
     # Else branch
     lines.append(f"{else_label}:")
     if node.else_branch:
         for stmt in node.else_branch:
-            lines.append(arm(ctx, stmt))
+            lines.append(armv8(ctx, stmt))
 
     lines.append(f"{end_label}:")
     return "\n".join(lines)
@@ -193,13 +255,13 @@ def visit_whileloop(ctx: CompilationContext, node: WhileLoop) -> str:
     lines = []
 
     lines.append(f"{start_label}:")
-    cond_code = arm(ctx, node.condition)
+    cond_code = armv8(ctx, node.condition)
     lines.append(cond_code)
     lines.append("    CMP R0, #0")
     lines.append(f"    BEQ {end_label}")
 
     for stmt in node.body:
-        lines.append(arm(ctx, stmt))
+        lines.append(armv8(ctx, stmt))
     lines.append(f"    B {start_label}")
     lines.append(f"{end_label}:")
     return "\n".join(lines)
@@ -211,11 +273,11 @@ def visit_binaryop(ctx: CompilationContext, node: BinaryOp) -> str:
     Compile a binary operation (e.g., +, -, *, /).
     """
     lines = []
-    left_code = arm(ctx, node.left)
+    left_code = armv8(ctx, node.left)
     lines.append(left_code)
     lines.append("    PUSH {R0}")
 
-    right_code = arm(ctx, node.right)
+    right_code = armv8(ctx, node.right)
     lines.append(right_code)
     lines.append("    POP {R1}")
 
@@ -238,7 +300,7 @@ def visit_unaryop(ctx: CompilationContext, node: UnaryOp) -> str:
     """
     Compile a unary operation (e.g., -x).
     """
-    operand_code = arm(ctx, node.operand)
+    operand_code = armv8(ctx, node.operand)
     lines = [operand_code]
 
     if node.operator == "-":
@@ -272,10 +334,10 @@ def visit_arrayindex(ctx: CompilationContext, node: ArrayIndex) -> str:
     Compile an array access (array[index]).
     """
     lines = []
-    lines.append(arm(ctx, node.array))
+    lines.append(armv8(ctx, node.array))
     lines.append("    PUSH {R0}    @ Push array base")
 
-    index_code = arm(ctx, node.index)
+    index_code = armv8(ctx, node.index)
     lines.append(index_code)
     lines.append("    POP {R1}    @ Pop array base into R1")
     lines.append("    LDR R0, [R1, R0, LSL #2]    @ Load array element")
@@ -288,7 +350,7 @@ def visit_structaccess(ctx: CompilationContext, node: StructAccess) -> str:
     """
     Compile struct field access.
     """
-    obj_code = arm(ctx, node.obj)
+    obj_code = armv8(ctx, node.obj)
     lines = [obj_code]
     lines.append(f"    @ Access field {node.field.name} with operator {node.operator}")
 
@@ -300,4 +362,4 @@ def visit_parens(ctx: CompilationContext, node: Parens) -> str:
     """
     Compile parenthesized expressions.
     """
-    return arm(ctx, node.inner)
+    return armv8(ctx, node.inner)
