@@ -10,14 +10,13 @@ from typing import (
     Type as TypeType,
     Tuple,
     Union,
-    get_type_hints,
     TYPE_CHECKING,
 )
 from itertools import zip_longest, chain
-from pycco.tokens import Token
 from copy import deepcopy
 from pycco.utils import flatten
 from abc import ABC, abstractmethod
+from pycco.parsing import Result, PyCcoError, PyCcoParseError
 
 if TYPE_CHECKING:
     from pycco.visitor import Visitor, CompilationContext
@@ -39,10 +38,23 @@ PRIMITIVES = {int, float, str, bool, type(None)}
 TNode = TypeVar("TNode", bound="Node")  # pylint: disable=C0103
 
 
-from typing import Any, Union, get_origin, get_args, ForwardRef
+class PyCcoASTError(PyCcoError): ...
 
 
-class PyCcoTypeError(TypeError):
+class PyCcoNodeValidateError(PyCcoASTError):
+    """
+    Raised by a node during `validate`
+    """
+
+    def __init__(self, message, node):
+        self.message = message
+        self.node = node
+
+    def __str__(self):
+        return self.message
+
+
+class PyCcoNodeTypeError(PyCcoASTError):
     """
     Raised when a field in a PyCco AST node does not match its expected type.
     """
@@ -57,7 +69,9 @@ class PyCcoTypeError(TypeError):
         self.actual_value = actual_value
         self.actual_type = type(actual_value).__name__
 
-        super().__init__(self._generate_message())
+        super().__init__(
+            self._generate_message(),
+        )
 
     def _generate_message(self) -> str:
         """
@@ -91,7 +105,7 @@ class PyCcoTypeError(TypeError):
         if origin is Union:
             args = get_args(type_)
             prettified_args = ", ".join(
-                PyCcoTypeError._prettify_type(arg) for arg in args
+                PyCcoNodeTypeError._prettify_type(arg) for arg in args
             )
             return f"one of {prettified_args}"
 
@@ -103,7 +117,7 @@ class PyCcoTypeError(TypeError):
         if origin is not None:
             args = get_args(type_)
             prettified_args = ", ".join(
-                PyCcoTypeError._prettify_type(arg) for arg in args
+                PyCcoNodeTypeError._prettify_type(arg) for arg in args
             )
             return f"{origin.__name__}[{prettified_args}]"
 
@@ -134,17 +148,26 @@ class Node(ABC):
 
     parent: Optional["Node"] = None
     parent_key: Optional[str] = None
-    _tokens: List[Token] = []
 
     _is_compiled: bool = False
-    _hooks: List[Callable[["Node", PyCcoTypeError], None]] = []
+    _hooks: List[Callable[["Node", PyCcoNodeTypeError], None]] = []
 
     def __post_init__(self):
         try:
             self.add_self_as_parent()
             self.validate_field_types()
-        except PyCcoTypeError as e:
+        except PyCcoNodeTypeError as e:
             self._run_hooks(e)
+
+    @property
+    def parse_result(self) -> "Result":
+        return self._result
+
+    def set_parse_result(self, res: "Result"):
+        """
+        Set the result from parsing on the node
+        """
+        self._result = res
 
     @classmethod
     def add_hook(cls, hook: Callable[["Node", Exception], None]) -> None:
@@ -174,7 +197,7 @@ class Node(ABC):
         """
         Validates that the fields of the node match their expected types.
         Raises:
-            PyCcoTypeError: If any field does not match its expected type.
+              PyCcoNodeTypeError: If any field does not match its expected type.
         """
         for field in self.__dataclass_fields__.values():
             field_name = field.name
@@ -187,12 +210,25 @@ class Node(ABC):
 
             # Check type compatibility
             if not self.is_type_compatible(actual_value, expected_type):
-                raise PyCcoTypeError(
+                raise PyCcoNodeTypeError(
                     node=self,
                     field_name=field_name,
                     expected_type=expected_type,
                     actual_value=actual_value,
                 )
+
+    def validate_ast(self):
+        """
+        Children can validate themselves within the ast
+        """
+        self.validate()
+        for child in self.children:
+            child.validate_ast()
+
+    def validate(self):
+        """
+        Validate this node
+        """
 
     @staticmethod
     def is_type_compatible(value, expected_type):
@@ -229,19 +265,6 @@ class Node(ABC):
             return True
 
         return False
-
-    @property
-    def tokens(self) -> List[Token]:
-        if self._tokens:
-            return self._tokens
-        ret = []
-        for child in self.children:
-            ret += child.tokens
-        return ret
-
-    def set_tokens(self, tokens: List[Token]) -> TNode:
-        self._tokens = tokens
-        return self
 
     @property
     def depth(self) -> int:
@@ -662,6 +685,10 @@ class Assign(Statement):
 @dataclass
 class Return(Statement):
     value: Expression
+
+    def validate(self):
+        if not self.get_nearest_parent_of_type(Function):
+            raise PyCcoNodeValidateError("return outside of function def", self)
 
     def __str__(self):
         return f"return {self.value};"

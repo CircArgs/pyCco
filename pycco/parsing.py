@@ -1,5 +1,5 @@
 """
-Moslty a copy of parsy
+Mostly a copy of parsy
 """
 
 from __future__ import annotations
@@ -24,50 +24,68 @@ def line_info_at(stream, index):
     return (line, col)
 
 
-class ParseError(RuntimeError):
-    def __init__(self, expected, stream, index):
+def get_line_info(stream, index):
+    try:
+        return line_info_at(stream, index)
+    except (TypeError, AttributeError):  # not a str
+        return index
+
+
+def format_error(stream, index, message):
+    line_info = get_line_info(stream, index)
+
+    format_line_info = ":".join(map(str, line_info))
+
+    block = []
+    if isinstance(line_info, int):
+        start, end = max(0, line_info - 10), line_info + 10
+        block.append(stream[start:end])
+        block.append(" " * line_info + "^")
+    else:
+        line, col = line_info
+        start, end = max(0, line - 5), line + 5
+        lines = stream.splitlines()
+        if start > 0:
+            block.append("...")
+
+        block.extend(lines[start : line + 1])
+        block.append(" " * col + "^")
+        block.extend(lines[line + 1 : end])
+        if end < len(lines):
+            block.append("...")
+
+    block = "\n".join(block)
+    block = indent(block, " " * 4)
+
+    return f"""PyCco Error at {format_line_info}
+{block}
+
+{message}
+"""
+
+
+class PyCcoError(Exception): ...
+
+
+class PyCcoParseError(PyCcoError): ...
+
+
+class PyCcoParserError(PyCcoParseError):
+    def __init__(self, expected=frozenset(), stream=None, index=None, message = None):
         self.expected = expected
         self.stream = stream
         self.index = index
-
-    def line_info(self):
-        try:
-            return line_info_at(self.stream, self.index)
-        except (TypeError, AttributeError):  # not a str
-            return self.index
+        self.message = message
 
     def __str__(self):
         expected_list = sorted(repr(e) for e in self.expected)
-
-        line_info = self.line_info()
-
-        format_line_info = ":".join(map(str, line_info))
-
-        block = []
-        if isinstance(line_info, int):
-            start, end = max(0, line_info - 10), line_info + 10
-            block.append(self.stream[start:end])
-            block.append(" " * line_info + "^")
+        if self.message:
+            message=self.message
+        elif len(expected_list) == 1:
+            message = f"Expected {expected_list[0]}"
         else:
-            line, col = line_info
-            start, end = max(0, line - 5), line + 5
-            lines = self.stream.splitlines()
-            if start > 0:
-                block.append("...")
-
-            block.extend(lines[start : line + 1])
-            block.append(" " * col + "^")
-            block.extend(lines[line + 1 : end])
-            if end < len(lines):
-                block.append("...")
-
-        block = "\n".join(block)
-        block = indent(block, " " * 4)
-
-        if len(expected_list) == 1:
-            return f"\n{block}\n\nExpected {expected_list[0]} at {format_line_info}\n"
-        else:
-            return f"\n{block}\n\nExpected one of {', '.join(expected_list)} at {format_line_info}\n"
+            message = f"Expected one of {', '.join(expected_list)}"
+        return format_error(self.stream, self.index, message)
 
 
 @dataclass
@@ -77,6 +95,12 @@ class Result:
     value: Any
     furthest: int
     expected: FrozenSet[str]
+
+    def __post_init__(self):
+        from pycco.ast import Node
+
+        if isinstance(self.value, Node):
+            self.value.set_parse_result(self)
 
     @staticmethod
     def success(index, value):
@@ -118,7 +142,7 @@ class Parser:
     is a string indicating what was expected, and the index is the index
     of the failure.
     """
-
+    description: str = ""
     def __init__(self, wrapped_fn: Callable[[str | bytes | list, int], Result]):
         """
         Creates a new Parser from a function that takes a stream
@@ -130,7 +154,7 @@ class Parser:
         return self.wrapped_fn(stream, index)
 
     def parse(self, stream: str | bytes | list) -> Any:
-        """Parses a string or list of tokens and returns the result or raise a ParseError."""
+        """Parses a string or list of tokens and returns the result or raise a   PyCcoParserError."""
         (result, _) = (self << eof).parse_partial(stream)
         return result
 
@@ -140,14 +164,14 @@ class Parser:
         """
         Parses the longest possible prefix of a given string.
         Returns a tuple of the result and the unparsed remainder,
-        or raises ParseError
+        or raises   PyCcoParserError
         """
         result = self(stream, 0)
 
         if result.status:
             return (result.value, stream[result.index :])
         else:
-            raise ParseError(result.expected, stream, result.furthest)
+            raise PyCcoParserError(result.expected, stream, result.furthest)
 
     def bind(self, bind_fn):
         @Parser
@@ -337,7 +361,7 @@ class Parser:
                     times += 1
                 elif times >= min:
                     # return failure, parser is not followed by other
-                    return Result.failure(index, "did not find other parser")
+                    return Result.failure(index, other.description or "did not find other parser" )
                 else:
                     # return failure, it did not match parser at least min times
                     return Result.failure(
@@ -374,7 +398,7 @@ class Parser:
                 return result
             else:
                 return Result.failure(index, description)
-
+        desc_parser.description=description
         return desc_parser
 
     def mark(self) -> Parser:
