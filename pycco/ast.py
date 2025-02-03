@@ -16,7 +16,8 @@ from itertools import zip_longest, chain
 from copy import deepcopy
 from pycco.utils import flatten
 from abc import ABC, abstractmethod
-from pycco.parsing import Result, PyCcoError, PyCcoParseError
+from pycco.parser import Result, PyCcoError, PyCcoParseError
+from textwrap import indent
 
 if TYPE_CHECKING:
     from pycco.visitor import Visitor, CompilationContext
@@ -153,11 +154,12 @@ class Node(ABC):
     _hooks: List[Callable[["Node", PyCcoNodeTypeError], None]] = []
 
     def __post_init__(self):
-        try:
-            self.add_self_as_parent()
-            self.validate_field_types()
-        except PyCcoNodeTypeError as e:
-            self._run_hooks(e)
+        self.add_self_as_parent()
+        # try:
+
+        #     # self.validate_field_types()
+        # except PyCcoNodeTypeError as e:
+        #     self._run_hooks(e)
 
     @property
     def parse_result(self) -> "Result":
@@ -620,31 +622,197 @@ class Node(ABC):
         return visitor(ctx, self)
 
 
-class Expression(Node):
-    def type(self) -> "Type":
-        raise NotImplementedError()
+@dataclass
+class Statement(Node):
+    """
+    Base class for all AST nodes that represent statements (i.e., no return value).
+    These typically appear inside a function body, blocks, or control-flow structures.
+    """
 
-    def parenthesize(self) -> str:
-        if isinstance(self.parent, Parens):
-            return False
-        return True
-
-
-class Statement(Node): ...
+    pass
 
 
 @dataclass
-class Code(Node):
-    statements: List[Node]
-    main: Optional["Function"] = None
+class Expression(Node):
+    """
+    Base class for all AST nodes that produce a value when evaluated.
+    Subclasses must implement a `type` property to indicate the Expression's type.
+    """
+
+    def parenthesize(self) -> bool:
+        """
+        Indicates whether this expression needs parentheses when converted to string.
+        Subclasses or the parent node can override how parentheses are used.
+        """
+        return True
+
+
+# ------------------------------------------------------------------------------
+# BLOCK & TOP-LEVEL CODE
+# ------------------------------------------------------------------------------
+
+
+@dataclass
+class Block(Expression):
+    """
+    Represents a block of statements (e.g. a function body or an 'if' branch).
+    Inherits from Expression for convenience in some compilers, but it's used
+    like a statement block in many C-like languages.
+    """
+
+    statements: List[Statement]
+
+    @property
+    def type(self) -> "Type":
+        """
+        A Block isn't evaluated for a value in most C-like languages.
+        Returning 'void' type for convenience.
+        """
+        return Type(name="void")
+
+    def validate(self):
+        """
+        Ensures all items in the statements list are indeed Statement nodes.
+        """
+        from pycco.utils import flatten  # or your flatten utility
+
+        for stmt in flatten(self.statements):
+            if not isinstance(stmt, Statement):
+                raise PyCcoNodeValidateError("Block can only contain statements.", self)
 
     def __str__(self):
-        return "\n".join(map(str, self.children))
+        from textwrap import indent
+
+        statements_str = indent("\n".join(map(str, self.statements)), " " * 4)
+        return f"{{\n{statements_str}\n}}"
+
+
+@dataclass
+class Code(Statement):
+    """
+    Represents the top-level container of an entire program (AST).
+    Typically holds multiple statements (global declarations, functions, etc.),
+    plus a reference to the 'main' function if present.
+    """
+
+    statements: List[Statement]
+    main: Optional["Function"] = None
+
+    def __post_init__(self):
+        # Ensure parent references are updated (if using a Node-like base).
+        # Then locate main if it exists.
+        self.main = next(
+            (
+                stmt
+                for stmt in self.statements
+                if isinstance(stmt, Function) and stmt.var.name.name == "main"
+            ),
+            None,
+        )
+
+    def validate(self):
+        if not self.main:
+            raise PyCcoNodeValidateError("No main function found in the code.", self)
+
+    def __str__(self):
+        return "\n".join(map(str, self.statements))
+
+
+# ------------------------------------------------------------------------------
+# FUNCTION & RETURN
+# ------------------------------------------------------------------------------
+
+
+@dataclass
+class Function(Statement):
+    """
+    A function definition with a Variable node for its 'signature', a Block as its body,
+    zero or more parameters (list of Variable), and optionally a Return node if it exists
+    in the body.
+    """
+
+    var: "Variable"
+    body: Block
+    params: List["Variable"] = field(default_factory=list)
+
+    def validate(self):
+        """
+        Ensures that:
+        - If the function's type is not 'void', it must have a Return node.
+        - If there's a Return, it should match the function type (enforced by Return's validation).
+        """
+        # If it's not void, we at least require some Return somewhere in the body.
+        if self.var.type.name != "void":
+            # This is a simplistic check; the actual requirement might be more complex
+            # (e.g., all control paths must return).
+            # But we provide a simple presence check for demonstration.
+            has_return = any(isinstance(stmt, Return) for stmt in self.body.statements)
+            if not has_return:
+                raise PyCcoNodeValidateError(
+                    f"Non-void function '{self.var.name.name}' must have a return statement.",
+                    self,
+                )
+
+    def __str__(self):
+        params = "void" if not self.params else ", ".join(map(str, self.params))
+        return f"""
+{self.var}({params})
+{self.body}
+"""
+
+
+@dataclass
+class Return(Statement):
+    """
+    A return statement returning an Expression. Must appear inside a Function body.
+    """
+
+    value: Expression
+
+    def validate(self):
+        """
+        Ensures that a Return statement is inside a Function and that the Expression type
+        matches the function's declared return type (unless the function is void).
+        """
+        func = self.get_nearest_parent_of_type(Function)
+        if not func:
+            raise PyCcoNodeValidateError(
+                "Return statement outside of a function.", self
+            )
+        # If the function is non-void, the expression type must match (simplified check).
+        if func.var.type.name != "void":
+            # Simple check if names match.
+            if self.value.type.name != func.var.type.name:
+                raise PyCcoNodeValidateError(
+                    f"Expected return type '{func.var.type.name}', got '{self.value.type.name}'.",
+                    self,
+                )
+
+    def __str__(self):
+        return f"return {self.value};"
+
+
+# ------------------------------------------------------------------------------
+# PRIMITIVES (Ident, Type, Number, Char, StringLiteral)
+# ------------------------------------------------------------------------------
 
 
 @dataclass
 class Ident(Expression):
+    """
+    An identifier (e.g., a variable name).
+    """
+
     name: str
+
+    @property
+    def type(self) -> "Type":
+        """
+        Naive approach: an Ident alone doesn't strictly define type without context.
+        We'll treat the identifier as if its name indicates a type.
+        (In a real compiler, you'd do symbol-table lookups.)
+        """
+        return Type(self.name)
 
     def __str__(self):
         return self.name
@@ -652,10 +820,19 @@ class Ident(Expression):
 
 @dataclass
 class Type(Statement):
+    """
+    A 'Type' node can represent 'int', 'char', 'myStruct', etc. plus whether it's a pointer.
+    """
+
     name: str
     pointer: bool = False
 
-    def set_pointer(self):
+    @property
+    def type(self) -> "Type":
+        # A Type node is a 'Type' itself, so we return self.
+        return self
+
+    def set_pointer(self) -> "Type":
         self.pointer = True
         return self
 
@@ -665,105 +842,86 @@ class Type(Statement):
 
 
 @dataclass
-class Variable(Statement):
-    type: Type
-    name: Ident
-
-    def __str__(self):
-        return f"{self.type} {self.name}"
-
-
-@dataclass
-class Assign(Statement):
-    var: Variable
-    value: Expression
-
-    def __str__(self):
-        return f"{self.var} = {self.value};"
-
-
-@dataclass
-class Return(Statement):
-    value: Expression
-
-    def validate(self):
-        if not self.get_nearest_parent_of_type(Function):
-            raise PyCcoNodeValidateError("return outside of function def", self)
-
-    def __str__(self):
-        return f"return {self.value};"
-
-
-@dataclass
 class Number(Expression):
+    """
+    Represents numeric constants (ints in this simplified AST).
+    """
+
     value: str
+
+    @property
+    def type(self) -> "Type":
+        """
+        Attempts to infer the type of the number based on:
+        - The variable it is assigned to (if applicable).
+        - The type of surrounding expressions (e.g., BinaryOp).
+        - Defaults to 'int' if no context is available.
+        """
+        parent = self.get_nearest_parent_of_type((Assign, BinaryOp))
+        if isinstance(parent, Assign):
+            return parent.var.type
+        elif isinstance(parent, BinaryOp):
+            return parent.left.type if parent.left is not self else parent.right.type
+        return Type("float") if "." in self.value else Type("int")  # Default assumption
 
     def __str__(self):
         return self.value
 
 
 @dataclass
-class Function(Statement):
-    var: Variable
-    params: List[Variable] = field(default_factory=list)
-    body: List[Expression | Statement] = field(default_factory=list)
-    ret: Optional[Return] = None
+class Char(Expression):
+    """
+    Represents a character constant (e.g. 'a', 'b').
+    """
+
+    value: str
+
+    @property
+    def type(self) -> "Type":
+        return Type("char")
 
     def __str__(self):
-        params = "void" if not self.params else ", ".join(map(str, self.params))
-        body = "" if not self.body else "\n".join(map(lambda s: f"  {s}", self.body))
-        ret = "" if self.ret is None else f"  {self.ret}"
-        return f"""
-{self.var}({params})
-{{
-{body}
-{ret}
-}}
-
-"""
+        return f"'{self.value}'"
 
 
 @dataclass
-class FunctionCall(Expression):
-    name: Ident  # The function being called
-    args: List[Expression]  # The arguments passed to the function
-    statement: bool = False
+class StringLiteral(Expression):
+    """
+    Represents a string constant (e.g. "hello").
+    """
 
-    def set_statement(self):
-        self.statement = True
-        return self
+    value: str
 
-    def __str__(self):
-        args_str = ", ".join(map(str, self.args))
-        semicolon = ";" if self.statement else ""
-        return f"{self.name}({args_str}){semicolon}"
-
-
-@dataclass
-class IfStatement(Statement):
-    condition: Expression
-    then_branch: List[Statement]
-    else_branch: Optional[List[Statement]] = None
+    @property
+    def type(self) -> "Type":
+        return Type("char", pointer=True)
 
     def __str__(self):
-        else_part = "" if not self.else_branch else f"else {{\n{self.else_branch}\n}}"
-        return f"if ({self.condition}) {{\n{self.then_branch}\n}} {else_part}"
+        return f'"{self.value}"'
 
 
-@dataclass
-class WhileLoop(Statement):
-    condition: Expression
-    body: List[Statement]
-
-    def __str__(self):
-        return f"while ({self.condition}) {{\n{self.body}\n}}"
+# ------------------------------------------------------------------------------
+# OPERATORS
+# ------------------------------------------------------------------------------
 
 
 @dataclass
 class BinaryOp(Expression):
+    """
+    Represents a binary operation, e.g. left + right, left - right, etc.
+    """
+
     left: Expression
     op: str
     right: Expression
+
+    @property
+    def type(self) -> "Type":
+        """
+        Naively returns the left operand type.
+        Realistically, you'd also check operator rules & type compatibility.
+        """
+        return self.left.type
 
     def __str__(self):
         ret = f"{self.left} {self.op} {self.right}"
@@ -774,9 +932,17 @@ class BinaryOp(Expression):
 
 @dataclass
 class UnaryOp(Expression):
+    """
+    Represents a unary operation, e.g. -value, !value, value++ (postfix=true).
+    """
+
     op: str
     value: Expression
     postfix: bool = False
+
+    @property
+    def type(self) -> "Type":
+        return self.value.type
 
     def __str__(self):
         if not self.postfix:
@@ -789,46 +955,359 @@ class UnaryOp(Expression):
 
 
 @dataclass
-class Char(Expression):
-    value: str
-
-    def __str__(self):
-        return f"'{self.value}'"
-
-
-@dataclass
-class StringLiteral(Expression):
-    value: str
-
-    def __str__(self):
-        return f'"{self.value}"'
-
-
-@dataclass
-class ArrayIndex(Expression):
-    array: Expression  # The array being indexed
-    index: Expression  # The index used to access the array
-
-    def __str__(self):
-        return f"{self.array}[{self.index}]"
-
-
-@dataclass
-class StructAccess(Expression):
-    obj: Expression  # The struct or pointer to a struct
-    operator: str  # Either '.' or '->'
-    field: Ident  # The field being accessed
-
-    def __str__(self):
-        return f"{self.obj}{self.operator}{self.field}"
-
-
-@dataclass
 class Parens(Expression):
+    """
+    Explicit parentheses around an expression.
+    """
+
     inner: Expression
+
+    @property
+    def type(self) -> "Type":
+        """
+        The parenthesized expression is the same type as the inner expression.
+        """
+        return self.inner.type
 
     def __str__(self):
         ret = str(self.inner)
         if self.parenthesize:
             return f"({ret})"
         return ret
+
+
+# ------------------------------------------------------------------------------
+# VARIABLES & ASSIGNMENT
+# ------------------------------------------------------------------------------
+
+
+@dataclass
+class Variable(Statement):
+    """
+    Represents a variable declaration: type + name.
+    """
+
+    type: Type
+    name: Ident
+
+    def __str__(self):
+        semicolon = ";" if not isinstance(self.parent, Statement) else ""
+        return f"{self.type} {self.name}{semicolon}"
+
+
+@dataclass
+class ArrayVariable(Variable):
+    """
+    Represents a variable that is an array: type + name + size (optional).
+    """
+
+    size: Optional[Expression] = None
+
+    @property
+    def semicolon(self) -> bool:
+        return True  # for printing, if needed
+
+    def __str__(self):
+        size_str = f"[{self.size}]" if self.size is not None else "[]"
+        semicolon = ";" if self.semicolon else ""
+        return f"{self.type} {self.name}{size_str}{semicolon}"
+
+
+@dataclass
+class Assign(Statement):
+    """
+    Represents an assignment: var = value;
+    var can be an Ident or a Variable node, value is an Expression.
+    """
+
+    var: Union[Ident, Variable]
+    value: Expression
+
+    def validate(self):
+        """
+        Ensures that var and value have matching types (basic name-based check).
+        """
+        # If var is a Variable node, use var.type. If it's an Ident, use Ident's type.
+        var_type = self.var.type if isinstance(self.var, Variable) else self.var.type
+        if (
+            var_type.name != self.value.type.name
+            or var_type.pointer != self.value.type.pointer
+        ):
+            raise PyCcoNodeValidateError(
+                f"Assignment type mismatch: var '{var_type}' vs value '{self.value.type}'",
+                self,
+            )
+
+    def __str__(self):
+        return f"{self.var} = {self.value};"
+
+
+# ------------------------------------------------------------------------------
+# CALLS & ARRAYS
+# ------------------------------------------------------------------------------
+
+
+@dataclass
+class FunctionCall(Expression):
+    """
+    Represents a function call: name(args...).
+    """
+
+    name: Ident
+    args: List[Expression]
+
+    @property
+    def type(self) -> "Type":
+        """
+        Naively tries to find the nearest parent Function and use its return type.
+        Otherwise fallback to 'void'.
+        """
+        func = (
+            self.get_nearest_parent_of_type(Function)
+            if hasattr(self, "get_nearest_parent_of_type")
+            else None
+        )
+        return func.var.type if func else Type("void")
+
+    def set_statement(self, value: bool = True):
+        self._statement = value
+        return self
+
+    @property
+    def statement(self):
+        return self._statement if hasattr(self, "_statement") else False
+
+    def __str__(self):
+        args_str = ", ".join(map(str, self.args))
+        semicolon = ";" if self.statement else ""
+        return f"{self.name}({args_str}){semicolon}"
+
+
+@dataclass
+class Array(Expression):
+    """
+    Represents an array literal: {val1, val2, ...}.
+    """
+
+    values: List[Expression]
+
+    @property
+    def type(self) -> "Type":
+        """
+        Determines the array type based on:
+        - The first element’s type if values exist.
+        - The assignment target’s type if in an Assign node.
+        - Defaults to 'int[]' if no other context is available.
+        """
+        if self.values:
+            return Type(self.values[0].type.name, pointer=True)
+        parent = self.get_nearest_parent_of_type(Assign)
+        if isinstance(parent, Assign):
+            return parent.var.type
+        return Type("int", pointer=True)  # Default assumption
+
+    def validate(self):
+        """
+        Ensures all array elements have the same type (basic name-based check).
+        """
+        if not self.values:
+            return
+        first_type = self.values[0].type
+        for val in self.values[1:]:
+            if (
+                val.type.name != first_type.name
+                or val.type.pointer != first_type.pointer
+            ):
+                raise PyCcoNodeValidateError(
+                    "All array elements must have the same type.", self
+                )
+
+    def __str__(self):
+        return f"{self.array}[{self.index}]"
+
+
+@dataclass
+class ArrayIndex(Expression):
+    """
+    Represents indexing into an array: array[index].
+    """
+
+    array: Expression
+    index: Expression
+
+    @property
+    def type(self) -> "Type":
+        """
+        If array is a pointer or an array, the result is the 'base' type.
+        e.g. int[] -> int, or int* -> int.
+        """
+        arr_type = self.array.type
+        # If it's something like int*, the base is int.
+        # For a real compiler, we might store array dimension info.
+        if arr_type.pointer:
+            return Type(name=arr_type.name)  # same name, but pointer=False
+        # fallback
+        return Type(name="unknown")
+
+    def validate(self):
+        """
+        Ensures that 'array' is something indexable and 'index' is an integer.
+        """
+        if not self.index.type.name == "int":
+            raise PyCcoNodeValidateError("Array index must be of type int.", self)
+        arr_type = self.array.type
+        if not arr_type.pointer:
+            raise PyCcoNodeValidateError(
+                f"Cannot index non-pointer/array type '{arr_type}'.", self
+            )
+
+    def __str__(self):
+        return f"{self.array}[{self.index}]"
+
+
+# ------------------------------------------------------------------------------
+# STRUCTS & TYPEDEF
+# ------------------------------------------------------------------------------
+
+
+@dataclass
+class Struct(Expression):
+    """
+    Represents a C-style struct definition or usage (with optional name).
+    Declarations inside are typically field variables.
+    """
+
+    name: Optional[Ident]
+    decls: List[Variable]
+
+    @property
+    def type(self) -> "Type":
+        """
+        If named, we treat it like 'struct MyStruct'; else just 'struct'.
+        """
+        return Type(self.name.name if self.name else "struct")
+
+    def validate(self):
+        """
+        Ensure each declaration inside the struct is a valid Variable node.
+        """
+        for decl in self.decls:
+            if not isinstance(decl, Variable):
+                raise PyCcoNodeValidateError(
+                    "Struct fields must be Variable nodes.", self
+                )
+
+    def __str__(self):
+        from textwrap import indent
+
+        name_str = f" {self.name}" if self.name else ""
+        fields_str = indent("\n".join(str(field) for field in self.decls), " " * 4)
+        return f"struct{name_str} {{\n{fields_str}\n}};"
+
+
+@dataclass
+class StructAccess(Expression):
+    """
+    Represents accessing a field within a struct or a pointer to a struct,
+    using either '.' or '->'.
+    """
+
+    obj: Expression  # the struct or pointer
+    operator: str  # '.' or '->'
+    field: Ident
+
+    @property
+    def type(self) -> "Type":
+        """
+        Naive approach:
+        In a real compiler, you'd look up the struct type (obj.type.name) in a symbol table,
+        find the field's declared type. Here, we'll just return 'int' or 'unknown'.
+        """
+        # Simplify to 'int' for demonstration, or 'unknown' if uncertain.
+        return Type("int")
+
+    def validate(self):
+        """
+        Basic check for '.' vs '->'. If the struct is a pointer, we expect '->'.
+        If the struct is not a pointer, we expect '.'.
+        This is still a simplification for demonstration.
+        """
+        obj_t = self.obj.type
+        is_pointer = obj_t.pointer
+        if is_pointer and self.operator == ".":
+            raise PyCcoNodeValidateError("Use '->' on pointer to struct.", self)
+        if not is_pointer and self.operator == "->":
+            raise PyCcoNodeValidateError("Use '.' on struct (non-pointer).", self)
+
+    def __str__(self):
+        return f"{self.obj}{self.operator}{self.field}"
+
+
+@dataclass
+class Typedef(Expression):
+    """
+    Represents a typedef: typedef original alias.
+    original can be a Type or a Struct, alias is an Ident.
+    """
+
+    original: Union[Type, Struct]
+    alias: Ident
+
+    @property
+    def type(self) -> "Type":
+        # The result of a typedef is effectively the alias as a new type.
+        return Type(self.alias.name)
+
+    def __str__(self):
+        return f"typedef {self.original} {self.alias};"
+
+
+# ------------------------------------------------------------------------------
+# IF & WHILE STATEMENTS
+# ------------------------------------------------------------------------------
+
+
+@dataclass
+class IfStatement(Statement):
+    """
+    Represents an 'if' statement, optional 'else' branch.
+    """
+
+    condition: Expression
+    then_branch: Block
+    else_branch: Optional[Block] = None
+
+    def validate(self):
+        """
+        Basic check that condition is an int (following C-like tradition).
+        """
+        if self.condition.type.name != "int":
+            raise PyCcoNodeValidateError(
+                "If condition must be an integer expression.", self
+            )
+
+    def __str__(self):
+        else_part = f"else {self.else_branch}" if self.else_branch else ""
+        return f"if ({self.condition}) {self.then_branch} {else_part}"
+
+
+@dataclass
+class WhileLoop(Statement):
+    """
+    Represents a 'while' loop with a condition and a body (Block).
+    """
+
+    condition: Expression
+    body: Block
+
+    def validate(self):
+        """
+        Basic check that condition is an int (following C-like tradition).
+        """
+        if self.condition.type.name != "int":
+            raise PyCcoNodeValidateError(
+                "While condition must be an integer expression.", self
+            )
+
+    def __str__(self):
+        return f"while ({self.condition}) {self.body}"

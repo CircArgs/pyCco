@@ -71,7 +71,7 @@ class PyCcoParseError(PyCcoError): ...
 
 
 class PyCcoParserError(PyCcoParseError):
-    def __init__(self, expected=frozenset(), stream=None, index=None, message = None):
+    def __init__(self, expected=frozenset(), stream=None, index=None, message=None):
         self.expected = expected
         self.stream = stream
         self.index = index
@@ -80,7 +80,7 @@ class PyCcoParserError(PyCcoParseError):
     def __str__(self):
         expected_list = sorted(repr(e) for e in self.expected)
         if self.message:
-            message=self.message
+            message = self.message
         elif len(expected_list) == 1:
             message = f"Expected {expected_list[0]}"
         else:
@@ -142,7 +142,9 @@ class Parser:
     is a string indicating what was expected, and the index is the index
     of the failure.
     """
+
     description: str = ""
+
     def __init__(self, wrapped_fn: Callable[[str | bytes | list, int], Result]):
         """
         Creates a new Parser from a function that takes a stream
@@ -361,7 +363,9 @@ class Parser:
                     times += 1
                 elif times >= min:
                     # return failure, parser is not followed by other
-                    return Result.failure(index, other.description or "did not find other parser" )
+                    return Result.failure(
+                        index, other.description or "did not find other parser"
+                    )
                 else:
                     # return failure, it did not match parser at least min times
                     return Result.failure(
@@ -398,7 +402,8 @@ class Parser:
                 return result
             else:
                 return Result.failure(index, description)
-        desc_parser.description=description
+
+        desc_parser.description = description
         return desc_parser
 
     def mark(self) -> Parser:
